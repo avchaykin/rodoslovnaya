@@ -130,28 +130,20 @@
   .ivy-btn { border: 1px solid var(--line); border-radius: 50%; width: 28px; height: 28px; color: var(--ivy-1); }
   .ivy-btn svg .fill { fill: currentColor; stroke: none; }
   .ivy-btn[aria-pressed="true"] { background: var(--ivy-1); color: var(--paper); border-color: var(--ivy-1); }
-  /* Плющ поверх древа: не перехватывает клики */
-  .tree svg.ivy { z-index: 2; pointer-events: none; }
+  /* Плющ поверх древа: не перехватывает клики. Каждый побег — своя небольшая SVG-«плитка»,
+     которая появляется на странице, только когда начинает расти */
+  .tree .ivy { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  .tree .ivy svg { inset: auto; }
   .tree .ask-btn, .tree .deck-btn { z-index: 3; }
-  .tree svg.ivy .ivy-stem { fill: none; stroke: var(--ivy-stem); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-  .tree svg.ivy .ivy-stem.twin { stroke-width: 1.3; opacity: .85; }
-  .tree svg.ivy .ivy-stem.tendril { stroke-width: 1.1; opacity: .9; }
-  .tree svg.ivy .ivy-leaf { transform-box: fill-box; transform-origin: 50% 100%; }
-  .tree svg.ivy .ivy-flower { transform-box: fill-box; transform-origin: 50% 50%; }
-  .tree svg.ivy .ivy-flower .petal { stroke-width: .7; }
-  .tree svg.ivy .ivy-flower.f .petal { fill: var(--clem-white); stroke: var(--clem-white-edge); }
-  .tree svg.ivy .ivy-flower.m .petal { fill: var(--clem-blue); stroke: var(--clem-blue-edge); }
-  .tree svg.ivy .ivy-flower .eye { fill: var(--clem-eye); stroke: none; }
-  .tree svg.ivy .ivy-flower .stamen { fill: var(--clem-stamen); stroke: none; }
-  .tree svg.ivy.alive .ivy-flower { animation: ivy-sway var(--sway-t, 5s) ease-in-out var(--sway-d, 0s) infinite alternate; }
-  @media (prefers-reduced-motion: reduce) { .tree svg.ivy.alive .ivy-flower { animation: none; } }
-  .tree svg.ivy.alive .ivy-leaf { animation: ivy-sway var(--sway-t, 4s) ease-in-out var(--sway-d, 0s) infinite alternate; }
-  @keyframes ivy-sway { from { rotate: calc(-1 * var(--sway, 5deg)); } to { rotate: var(--sway, 5deg); } }
-  @media (prefers-reduced-motion: reduce) { .tree svg.ivy.alive .ivy-leaf { animation: none; } }
-  .tree svg.ivy .ivy-leaf { stroke: var(--ivy-vein); stroke-width: .7; paint-order: stroke; }
-  .tree svg.ivy .ivy-leaf.v1 { fill: var(--ivy-1); }
-  .tree svg.ivy .ivy-leaf.v2 { fill: var(--ivy-2); }
-  .tree svg.ivy .ivy-leaf.v3 { fill: var(--ivy-3); }
+  .tree .ivy .ivy-stem { fill: none; stroke: var(--ivy-stem); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .tree .ivy .ivy-stem.twin { stroke-width: 1.3; opacity: .85; }
+  .tree .ivy .ivy-stem.tendril { stroke-width: 1.1; opacity: .9; }
+  .tree .ivy .ivy-leaf { transform-box: fill-box; transform-origin: 50% 100%; }
+  .tree .ivy .ivy-flower { transform-box: fill-box; transform-origin: 50% 50%; }
+  .tree .ivy .ivy-leaf { stroke: var(--ivy-vein); stroke-width: .7; paint-order: stroke; }
+  .tree .ivy .ivy-leaf.v1 { fill: var(--ivy-1); }
+  .tree .ivy .ivy-leaf.v2 { fill: var(--ivy-2); }
+  .tree .ivy .ivy-leaf.v3 { fill: var(--ivy-3); }
   .help-btn { font: 700 15px/1 var(--font-display); border: 1px solid var(--line); border-radius: 50%; width: 28px; height: 28px; color: var(--accent); }
   .help-btn[aria-expanded="true"] { background: var(--accent); color: var(--paper); border-color: var(--accent); }
   .help-pop {
@@ -1924,7 +1916,7 @@ function renderTree() {
 
 // ─── Плющ: побег растёт от Светланы по линиям древа и обвивает каждую карточку ─
 // Запускается только кнопкой в верхней панели; той же кнопкой убирается
-const ivy = { on: false, svg: null, pending: false };
+const ivy = { on: false, el: null, pending: false };
 let lastTree = null;
 const CLEMATIS_PETAL = "M0 0C2.6-2.2 4.4-6.2 3.4-10.4 2.8-12.6 1.2-14 0-14.8-1.2-14-2.8-12.6-3.4-10.4-4.4-6.2-2.6-2.2 0 0Z";
 const IVY_LEAF = "M0 0C-2.6-1.6-6.4-2.4-8-6.2C-6.6-7.4-4.4-7.2-3.2-8.6C-2.6-11.6 2.6-11.6 3.2-8.6C4.4-7.2 6.6-7.4 8-6.2C6.4-2.4 2.6-1.6 0 0Z";
@@ -1987,31 +1979,103 @@ function wrapPoly(b, side, frac) {
   }
   return out;
 }
+// Длина по самой волнистой линии: она длиннее исходной ломаной, и с «прямой» длиной
+// пунктир повторялся — в конце стеблей сразу торчали кусочки. Ломаная по точкам
+// чуть длиннее сглаженной кривой — запас как раз нужен. (getTotalLength на тысяче
+// стеблей заставлял браузер раз за разом пересчитывать вёрстку — полсекунды)
+function samplesLength(pts) {
+  let l = 0;
+  for (let i = 1; i < pts.length; i++) l += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  return Math.ceil(l) + 2;
+}
+// Лист, «запечённый» в координаты древа: сдвиг, поворот и размер уже в самих точках.
+// Выросшие листья плитки сливаются в три пути (по оттенку) — тысячи узлов меньше,
+// и масштаб древа с плющом пересчитывается быстро
+const IVY_LEAF_TOKENS = IVY_LEAF.match(/[A-Z]|-?\d*\.?\d+/g);
+function leafPath(x, y, ang, size) {
+  const rad = ang * Math.PI / 180, c = Math.cos(rad) * size, s = Math.sin(rad) * size;
+  let out = "", px = null;
+  for (const t of IVY_LEAF_TOKENS) {
+    if (/[A-Z]/.test(t)) { out += t; continue; }
+    if (px === null) { px = +t; continue; }
+    const py = +t;
+    out += (x + px * c - py * s).toFixed(1) + " " + (y + px * s + py * c).toFixed(1) + " ";
+    px = null;
+  }
+  return out;
+}
+// Клематис — общий символ на цвет и число лепестков: в каждом цветке одна ссылка <use>
+// вместо полутора десятков узлов. Стили страницы внутрь <use> не проходят, поэтому цвета
+// заданы прямо в символе — переменные темы при этом наследуются, светлая и тёмная работают
+function clematisDefs(NS) {
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", 0); svg.setAttribute("height", 0);
+  const defs = document.createElementNS(NS, "defs");
+  for (const sex of ["f", "m"]) for (const petals of [4, 6]) {
+    const sym = document.createElementNS(NS, "symbol");
+    sym.id = `clem-${sex}${petals}`;
+    sym.setAttribute("overflow", "visible");
+    const petal = sex === "f" ? "fill: var(--clem-white); stroke: var(--clem-white-edge)" : "fill: var(--clem-blue); stroke: var(--clem-blue-edge)";
+    for (let k = 0; k < petals; k++) {
+      const pe = document.createElementNS(NS, "path");
+      pe.setAttribute("d", CLEMATIS_PETAL);
+      pe.setAttribute("style", petal + "; stroke-width: .7");
+      pe.setAttribute("transform", `rotate(${(k * 360 / petals).toFixed(1)})`);
+      sym.appendChild(pe);
+    }
+    const c = document.createElementNS(NS, "circle");
+    c.setAttribute("r", "2.6"); c.setAttribute("style", "fill: var(--clem-eye)");
+    sym.appendChild(c);
+    for (let k = 0; k < 7; k++) {
+      const a = k / 7 * Math.PI * 2 + 0.4 * (k % 3);
+      const st = document.createElementNS(NS, "circle");
+      st.setAttribute("cx", (Math.cos(a) * 3.6).toFixed(1)); st.setAttribute("cy", (Math.sin(a) * 3.6).toFixed(1));
+      st.setAttribute("r", ".75"); st.setAttribute("style", "fill: var(--clem-stamen)");
+      sym.appendChild(st);
+    }
+    defs.appendChild(sym);
+  }
+  svg.appendChild(defs);
+  return svg;
+}
 function drawIvy(animate) {
   removeIvy(false);
   if (!lastTree) return;
   const { rootNode, dir } = lastTree;
   const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.classList.add("ivy");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("width", tree.offsetWidth);
-  svg.setAttribute("height", tree.offsetHeight);
-  const stems = document.createElementNS(NS, "g"), leaves = document.createElementNS(NS, "g"), flowers = document.createElementNS(NS, "g");
-  let lastGrow = null;
-  svg.append(stems, leaves, flowers);
-  tree.appendChild(svg);
-  ivy.svg = svg;
+  const box = document.createElement("div");
+  box.className = "ivy";
+  box.setAttribute("aria-hidden", "true");
+  box.appendChild(clematisDefs(NS));
+  tree.appendChild(box);
+  ivy.el = box;
   const motion = animate && !reduceMotion();
   const SPEED = 300;                       // пикселей в секунду
-  const items = [];
+  // Плитка — один побег (обвивка карточки или ветка к родителю) со своими листьями,
+  // усиками и цветами; границы растут по мере того, как в неё что-то добавляется
+  const tiles = [];
+  let tile = null;
+  function newTile() {
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "ivy-tile");
+    const stems = document.createElementNS(NS, "g"), leaves = document.createElementNS(NS, "g"), flowers = document.createElementNS(NS, "g");
+    svg.append(stems, leaves, flowers);
+    tile = { svg, stems, leaves, flowers, items: [], baked: ["", "", ""], start: Infinity, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    tiles.push(tile);
+    return tile;
+  }
+  const extend = (t, x, y, r) => {
+    t.x0 = Math.min(t.x0, x - r); t.y0 = Math.min(t.y0, y - r);
+    t.x1 = Math.max(t.x1, x + r); t.y1 = Math.max(t.y1, y + r);
+  };
+  let lastGrow = null;
   // Куда входит линия к родителю и откуда выходит от ребёнка — зависит от направления древа
   const exitSide = { lr: "right", td: "bottom", bu: "top" }[dir];
   const enterSide = { lr: "left", td: "top", bu: "bottom" }[dir];
   const mid = (b, side) => side === "left" ? [b.x, b.y + b.h / 2] : side === "right" ? [b.x + b.w, b.y + b.h / 2]
     : side === "top" ? [b.x + b.w / 2, b.y] : [b.x + b.w / 2, b.y + b.h];
 
-  // Лист: группа ставит его на место (атрибут transform), сам лист растёт и качается
+  // Лист: группа ставит его на место (атрибут transform), сам лист разворачивается
   // через отдельные свойства scale/rotate вокруг своего черешка
   // Карточки, на которые листьям заходить нельзя: текст должен читаться
   const cardRects = [...tree.querySelectorAll(".card")].map(boxOf);
@@ -2019,29 +2083,39 @@ function drawIvy(animate) {
   function addLeaf(x, y, ang, size, start, rnd) {
     const rad = ang * Math.PI / 180, reach = 11.6 * size;
     if (overCard(x + Math.sin(rad) * reach, y - Math.cos(rad) * reach) || overCard(x + Math.sin(rad) * reach * .5, y - Math.cos(rad) * reach * .5)) return;
+    const v = Math.floor(rnd() * 3);
+    rnd(); rnd(); rnd();                 // раньше тут задавалось покачивание — узор побегов не меняем
+    ang = Math.round(ang);
+    tile.baked[v] += leafPath(x, y, ang, size);
+    extend(tile, x, y, reach * 1.2);
+    if (!motion) return;
+    // Пока растёт — отдельный лист, чтобы он мог развернуться сам по себе
     const g = document.createElementNS(NS, "g");
-    g.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${ang.toFixed(0)})`);
+    g.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${ang})`);
     const leaf = document.createElementNS(NS, "path");
     leaf.setAttribute("d", IVY_LEAF);
-    leaf.setAttribute("class", "ivy-leaf v" + (1 + Math.floor(rnd() * 3)));
+    leaf.setAttribute("class", "ivy-leaf v" + (1 + v));
     leaf.style.scale = size.toFixed(2);
-    // Своё покачивание у каждого листа: амплитуда, период и фаза
-    leaf.style.setProperty("--sway", (3 + rnd() * 6).toFixed(1) + "deg");
-    leaf.style.setProperty("--sway-t", (2.6 + rnd() * 3.2).toFixed(2) + "s");
-    leaf.style.setProperty("--sway-d", (-rnd() * 5).toFixed(2) + "s");
     g.appendChild(leaf);
-    leaves.appendChild(g);
-    items.push({ el: leaf, kind: "leaf", size, start });
+    tile.leaves.appendChild(g);
+    tile.items.push({ el: leaf, kind: "leaf", size, start });
+  }
+  // Листья плитки — тремя путями вместо сотен отдельных
+  function bake(t) {
+    t.leaves.replaceChildren(...t.baked.filter(Boolean).map((d, i) => {
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("class", "ivy-leaf v" + (1 + i));
+      return path;
+    }));
   }
   function addStem(pts, start, dur, cls) {
     const path = document.createElementNS(NS, "path");
     path.setAttribute("d", samplesToPath(pts));
     path.setAttribute("class", "ivy-stem " + cls);
-    stems.appendChild(path);
-    // Длина по самой волнистой линии: она длиннее исходной ломаной, и с «прямой» длиной
-    // пунктир повторялся — в конце стеблей сразу торчали кусочки
-    const len = Math.ceil(path.getTotalLength()) + 2;
-    items.push({ el: path, kind: "stem", len, start, dur });
+    tile.stems.appendChild(path);
+    for (const p of pts) extend(tile, p.x, p.y, 2);
+    tile.items.push({ el: path, kind: "stem", len: samplesLength(pts), start, dur });
   }
   // Клематис у тех, кого уже нет: известен год смерти или родился больше 100 лет назад.
   // Белый — у женщин, синий — у мужчин. Распускается, когда побег обвил карточку
@@ -2062,34 +2136,17 @@ function drawIvy(animate) {
       const x = p.x + dx / dl * 6, y = p.y + dy / dl * 6;
       const outer = document.createElementNS(NS, "g");
       outer.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${(rnd() * 60).toFixed(0)})`);
-      const f = document.createElementNS(NS, "g");
-      f.setAttribute("class", "ivy-flower " + (n.p.sex === "f" ? "f" : "m"));
       const petals = 6 + (rnd() < 0.3 ? -2 : 0);
-      for (let k = 0; k < petals; k++) {
-        const pe = document.createElementNS(NS, "path");
-        pe.setAttribute("d", CLEMATIS_PETAL);
-        pe.setAttribute("class", "petal");
-        pe.setAttribute("transform", `rotate(${(k * 360 / petals).toFixed(1)})`);
-        f.appendChild(pe);
-      }
-      const c = document.createElementNS(NS, "circle");
-      c.setAttribute("r", "2.6"); c.setAttribute("class", "eye");
-      f.appendChild(c);
-      for (let k = 0; k < 7; k++) {
-        const a = k / 7 * Math.PI * 2 + rnd();
-        const st = document.createElementNS(NS, "circle");
-        st.setAttribute("cx", (Math.cos(a) * 3.6).toFixed(1)); st.setAttribute("cy", (Math.sin(a) * 3.6).toFixed(1));
-        st.setAttribute("r", ".75"); st.setAttribute("class", "stamen");
-        f.appendChild(st);
-      }
+      for (let k = 0; k < 7; k++) rnd();   // раньше тут вращались тычинки — держим ту же последовательность
+      const f = document.createElementNS(NS, "use");
+      f.setAttribute("href", `#clem-${n.p.sex === "f" ? "f" : "m"}${petals}`);
+      f.setAttribute("class", "ivy-flower");
       const size = 1.05 + rnd() * 0.4;
       f.style.scale = size.toFixed(2);
-      f.style.setProperty("--sway", (2 + rnd() * 3).toFixed(1) + "deg");
-      f.style.setProperty("--sway-t", (4 + rnd() * 3).toFixed(2) + "s");
-      f.style.setProperty("--sway-d", (-rnd() * 6).toFixed(2) + "s");
       outer.appendChild(f);
-      flowers.appendChild(outer);
-      items.push({ el: f, kind: "flower", size, start: g.start + g.dur * (0.6 + frac * 0.4) + 250 });
+      g.tile.flowers.appendChild(outer);
+      extend(g.tile, x, y, 16 * size);
+      g.tile.items.push({ el: f, kind: "flower", size, start: g.start + g.dur * (0.6 + frac * 0.4) + 250 });
     }
   }
   // Усик: короткий боковой побег, закручивается к концу, на нём 1–3 листа
@@ -2121,10 +2178,11 @@ function drawIvy(animate) {
     const rnd = seeded(key);
     const pts = vineSamples(poly, opts.amp, opts.period, rnd);
     if (pts.length < 2) return start;
+    newTile().start = start;
     const len = pts[pts.length - 1].d;
     const dur = Math.max(260, len / SPEED * 1000);
     addStem(pts, start, dur, "main");
-    lastGrow = { pts, start, dur };
+    lastGrow = { pts, start, dur, tile };
     // Дополнительные стебли в противофазе — побеги переплетаются, как у настоящего плюща
     for (let i = 0; i < (opts.twins || 0); i++) {
       const twin = vineSamples(poly, opts.amp * (0.8 + i * 0.35), opts.period * (1.37 + i * 0.41), rnd);
@@ -2192,47 +2250,68 @@ function drawIvy(animate) {
     }
   })(rootNode, 0);
 
+  // Плитка ровно по своему содержимому; координаты внутри — те же, что у древа
+  for (const t of tiles) {
+    const x = Math.floor(t.x0), y = Math.floor(t.y0), w = Math.ceil(t.x1) - x, h = Math.ceil(t.y1) - y;
+    t.svg.setAttribute("viewBox", `${x} ${y} ${w} ${h}`);
+    t.svg.setAttribute("width", w); t.svg.setAttribute("height", h);
+    t.svg.style.left = x + "px"; t.svg.style.top = y + "px";
+  }
+  tiles.sort((a, b) => a.start - b.start);
+
   if (!motion) {
-    if (animate) svg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400 });
-    if (!reduceMotion()) svg.classList.add("alive");
+    for (const t of tiles) bake(t);
+    box.append(...tiles.map(t => t.svg));
+    if (animate) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400 });
     return;
   }
-  let last = 0;
-  for (const it of items) {
-    if (it.kind === "stem") {
-      it.el.style.strokeDasharray = it.len;
-      it.el.animate([{ strokeDashoffset: it.len }, { strokeDashoffset: 0 }],
-        { duration: it.dur, delay: it.start, easing: "cubic-bezier(.35,.1,.45,1)", fill: "backwards" });
-      last = Math.max(last, it.start + it.dur);
-    } else if (it.kind === "flower") {
-      const s = it.size.toFixed(2);
-      // Распускается медленно и плавно: проявляется, разворачивается, без «пружины»
-      it.el.animate([
-        { scale: (it.size * 0.15).toFixed(2), rotate: "-35deg", opacity: 0 },
-        { opacity: 1, offset: 0.4 },
-        { scale: s, rotate: "0deg", opacity: 1 },
-      ], { duration: 1800, delay: it.start, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "backwards" });
-      last = Math.max(last, it.start + 1800);
-    } else {
-      const s = it.size.toFixed(2);
-      it.el.animate([
-        { scale: "0", rotate: "-40deg", opacity: 0 },
-        { scale: (it.size * 1.12).toFixed(2), rotate: "6deg", opacity: 1, offset: 0.7 },
-        { scale: s, rotate: "0deg", opacity: 1 },
-      ], { duration: 560, delay: it.start, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "backwards" });
-      last = Math.max(last, it.start + 560);
+  // Рост: плитка попадает на страницу, только когда приходит её время, и тогда же
+  // заводит свои анимации — браузер не держит тысячи «ждущих» анимаций с первого кадра
+  const t0 = performance.now();
+  let next = 0;
+  const itemEnd = it => it.start + (it.kind === "stem" ? it.dur : it.kind === "flower" ? 1800 : 560);
+  function startTile(t, now) {
+    for (const it of t.items) {
+      const delay = it.start - now;
+      if (it.kind === "stem") {
+        it.el.style.strokeDasharray = it.len;
+        it.el.animate([{ strokeDashoffset: it.len }, { strokeDashoffset: 0 }],
+          { duration: it.dur, delay, easing: "cubic-bezier(.35,.1,.45,1)", fill: "backwards" });
+      } else if (it.kind === "flower") {
+        const s = it.size.toFixed(2);
+        // Распускается медленно и плавно: проявляется, разворачивается, без «пружины»
+        it.el.animate([
+          { scale: (it.size * 0.15).toFixed(2), rotate: "-35deg", opacity: 0 },
+          { opacity: 1, offset: 0.4 },
+          { scale: s, rotate: "0deg", opacity: 1 },
+        ], { duration: 1800, delay, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "backwards" });
+      } else {
+        const s = it.size.toFixed(2);
+        it.el.animate([
+          { scale: "0", rotate: "-40deg", opacity: 0 },
+          { scale: (it.size * 1.12).toFixed(2), rotate: "6deg", opacity: 1, offset: 0.7 },
+          { scale: s, rotate: "0deg", opacity: 1 },
+        ], { duration: 560, delay, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "backwards" });
+      }
     }
+    box.appendChild(t.svg);
+    // Плитка доросла — её листья сливаются в общие пути
+    const end = Math.max(...t.items.filter(it => it.kind === "leaf").map(itemEnd), 0);
+    setTimeout(() => { if (ivy.el === box) bake(t); }, end - now + 50);
   }
-  // Когда всё выросло — плющ «оживает»: листья покачиваются, будто от ветра
-  const svgRef = svg;
-  setTimeout(() => { if (ivy.svg === svgRef) svgRef.classList.add("alive"); }, last + 100);
+  (function tick() {
+    if (ivy.el !== box) return;
+    const now = performance.now() - t0;
+    while (next < tiles.length && tiles[next].start <= now + 60) startTile(tiles[next++], now);
+    if (next < tiles.length) requestAnimationFrame(tick);
+  })();
 }
 function removeIvy(fade) {
-  const svg = ivy.svg;
-  ivy.svg = null;
-  if (!svg) return;
-  if (fade && !reduceMotion()) svg.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350 }).onfinish = () => svg.remove();
-  else svg.remove();
+  const el = ivy.el;
+  ivy.el = null;
+  if (!el) return;
+  if (fade && !reduceMotion()) el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350 }).onfinish = () => el.remove();
+  else el.remove();
 }
 function syncIvyBtn() {
   const b = $("ivy-btn");
