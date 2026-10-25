@@ -1239,7 +1239,7 @@ function renderDrawer(swap) {
       const h = document.createElement("div"); h.className = "ev-h";
       h.append(`${kind}: ${displayName(people[p[rel]])}`, evBadge(ev));
       it.appendChild(h);
-      if (ev.why) { const w = document.createElement("div"); w.className = "ev-why"; w.append(linkify(ev.why)); it.appendChild(w); }
+      if (ev.why) { const w = document.createElement("div"); w.className = "ev-why"; w.append(linkify(ev.why.replace(/\s*\((?:A-\d{3}[,; ]*)+\)/g, ""))); it.appendChild(w); }
       if (ev.src && ev.src.length) {
         const ul = document.createElement("ul");
         for (const src of ev.src) {
