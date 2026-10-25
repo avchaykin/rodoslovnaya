@@ -229,6 +229,21 @@
   .card.sib-card { background: var(--bg); }
   .card.sib-card.add { background: transparent; border: 1.5px dashed var(--unknown-border); box-shadow: none; color: var(--muted); font-size: 13px; }
   .tree svg path.sib { stroke-dasharray: 4 3; }
+  .kin { margin-top: 5px; padding-top: 4px; border-top: 1px dashed var(--line); text-align: left; }
+  .kin-btn {
+    all: unset; box-sizing: border-box; width: 100%; cursor: pointer; font-size: 11px; color: var(--accent);
+    display: flex; gap: 4px; align-items: center; justify-content: center;
+  }
+  .kin-btn::after { content: "▸"; font-size: 9px; transition: transform .15s ease; }
+  .kin-btn[aria-expanded="true"]::after { transform: rotate(90deg); }
+  .kin-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .kin-list { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 4px; }
+  .kin-sub { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding-left: 10px; border-left: 1px solid var(--line); margin-left: 5px; }
+  .kin .sib { font-size: 11px; }
+  .tree.dense .card { padding: 6px 7px; }
+  .tree.dense .card.ph { padding: 4px; }
+  .tree.dense .card .name { margin: 2px 0; }
+  .tree.dense svg path { stroke-linecap: round; }
   .cv-card .sibs { justify-content: flex-start; margin-top: 12px; }
   .cv-card .sib { font-size: 13px; padding: 3px 9px; }
   .card.ph {
@@ -642,7 +657,8 @@
     <button type="button" data-zoom="1" title="Увеличить (Alt + колесо мыши)" aria-label="Увеличить"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9M8 3.5v9"/></svg></button>
   </div>
   <div class="mb-group">
-    <label class="chip" id="sibs-wrap" title="Показывать братьев и сестёр"><input type="checkbox" id="opt-sibs">Братья и сёстры</label>
+    <label class="chip" id="sibs-wrap" title="Братья и сёстры предков, их дети и внуки, дети от других браков. На карточке — значок «+N», нажмите, чтобы раскрыть"><input type="checkbox" id="opt-sibs">Боковые ветви</label>
+    <label class="chip" id="compact-wrap" title="Карточки вплотную друг к другу, плавные линии"><input type="checkbox" id="opt-compact">Компактно</label>
     <label class="chip" id="empty-wrap" title="Показывать пустые места для новых предков"><input type="checkbox" id="opt-empty">Пустые места</label>
   </div>
   <div class="mb-group" id="tl-scopes" aria-label="События на временной линии">
@@ -710,6 +726,12 @@
       </label>
       <label id="sex-wrap" hidden>Кто это
         <select id="f-sex"><option value="m">Брат</option><option value="f">Сестра</option></select>
+      </label>
+      <label id="other-wrap" hidden>Второй родитель
+        <select id="f-other"></select>
+      </label>
+      <label id="other-name-wrap" hidden>Имя второго родителя
+        <input id="f-other-name" autocomplete="off" placeholder="Например: Анна Ивановна (вторая жена)">
       </label>
       <label id="maiden-wrap">Девичья фамилия
         <input id="f-maiden" autocomplete="off">
@@ -813,6 +835,12 @@ const SIZES = {
   vertical:   { card: 150, compact: 136, ph: 68, gapB: 12, gapD: 36 },
   horizontal: { card: 180, compact: 160, ph: 104, gapB: 10, gapD: 34 },
 };
+// Компактный режим: те же карточки, но зазоры минимальные и уменьшенные карточки уже со второго поколения
+const sizesFor = vertical => {
+  const base = vertical ? SIZES.vertical : SIZES.horizontal;
+  return prefs.compact ? { ...base, gapB: 4, gapD: vertical ? 26 : 24 } : base;
+};
+const smallFrom = () => prefs.compact ? 2 : 3;
 
 const $ = id => document.getElementById(id);
 const tree = $("tree");
@@ -834,6 +862,7 @@ let people = {};          // id -> person
 let loaded = false;
 let focusId = ROOT;
 const expanded = new Set();   // чьи колоды братьев и сестёр сейчас раскрыты
+const kinOpen = new Set();    // у каких братьев и сестёр в колоде раскрыты их потомки
 
 // ─── Вопросы к семье ──────────────────────────────────────────────────────
 // asks/<id>: { target, question, status: "open" | "answered", createdAt }
@@ -1156,11 +1185,25 @@ function renderDrawer(swap) {
       const pid = p[rel] && people[p[rel]] ? p[rel] : slotKey(key, rel);
       grid.appendChild(relButton(pid, kind, editing() ? "+ добавить" : "неизвестно"));
     }
-    const kids = Object.keys(people).filter(k => people[k].father === key || people[k].mother === key).sort((a, b) => yearOf(people[a]) - yearOf(people[b]));
-    const spouses = [...new Set(kids.map(k => people[k].father === key ? people[k].mother : people[k].father).filter(x => x && people[x]))];
+    const kids = kidsOf(key);
+    const spouses = spousesOf(key);
     for (const sp of spouses) { const b = relButton(sp, people[sp].sex === "f" ? "Жена" : "Муж"); b.classList.add("wide"); grid.appendChild(b); }
-    for (const k of kids) grid.appendChild(relButton(k, people[k].sex === "f" ? "Дочь" : "Сын"));
-    for (const sid of siblingsOf(key)) grid.appendChild(relButton(sid, people[sid].sex === "f" ? "Сестра" : "Брат"));
+    for (const k of kids) {
+      // При нескольких браках у ребёнка подписан второй родитель
+      const o = people[k].father === key ? people[k].mother : people[k].father;
+      const from = spouses.length > 1 && o && people[o] ? ` · от ${displayName(people[o]).split(" ")[0]}` : "";
+      grid.appendChild(relButton(k, (people[k].sex === "f" ? "Дочь" : "Сын") + from));
+    }
+    if (editable) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "rel-btn unknown add-kid";
+      add.innerHTML = '<span class="k">Ребёнок</span><span class="v">+ сын или дочь</span>';
+      add.title = "В том числе от другого брака";
+      add.addEventListener("click", () => addChild(key));
+      grid.appendChild(add);
+    }
+    for (const sid of siblingsOf(key)) grid.appendChild(relButton(sid, sibRole(key, sid)));
   } else if (n && n.childId && people[n.childId]) {
     const b = relButton(n.childId, people[n.childId].sex === "f" ? "Дочь" : "Сын");
     b.classList.add("wide");
@@ -1215,6 +1258,7 @@ async function deletePerson(id) {
   for (const [cid, c] of Object.entries(people)) {
     if (c.father === id) await db.doc("people/" + cid).update({ father: null });
     if (c.mother === id) await db.doc("people/" + cid).update({ mother: null });
+    if (c.spouseOf === id) await db.doc("people/" + cid).update({ spouseOf: null });
   }
   await db.doc("people/" + id).delete();
   if (focusId === id) focusId = ROOT;
@@ -1517,7 +1561,7 @@ function refreshAsksDialog() {
 
 // ─── Настройки вида (только для этого браузера) ──────────────────────────
 const PREFS_KEY = "rodoslovnaya-view";
-const prefs = { dir: "lr", mode: null, empty: true, sibs: true };
+const prefs = { dir: "lr", mode: null, empty: true, sibs: true, compact: false };
 try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}")); } catch {}
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch {} }
 const isNarrow = () => matchMedia("(max-width: 640px)").matches;
@@ -1589,6 +1633,40 @@ function siblingsOf(id) {
     return (p.father && s.father === p.father) || (p.mother && s.mother === p.mother)
       || s.siblingOf === id || sid === p.siblingOf || (p.siblingOf && s.siblingOf === p.siblingOf);
   }).sort((a, b) => yearOf(people[a]) - yearOf(people[b]));
+}
+// Брат или сестра только по одному из родителей: другой родитель известен и он другой
+function sibKind(id, sid) {
+  const p = people[id] || {}, s = people[sid] || {};
+  const sameF = p.father && s.father === p.father, sameM = p.mother && s.mother === p.mother;
+  if (sameF && !sameM && p.mother && s.mother) return "по отцу";
+  if (sameM && !sameF && p.father && s.father) return "по матери";
+  return "";
+}
+const sibRole = (id, sid) => (people[sid].sex === "f" ? "Сестра" : "Брат") + (sibKind(id, sid) ? " " + sibKind(id, sid) : "");
+function kidsOf(id) {
+  return Object.keys(people).filter(k => people[k].father === id || people[k].mother === id)
+    .sort((a, b) => yearOf(people[a]) - yearOf(people[b]));
+}
+// Все потомки (дети, внуки…) — для счётчика на колоде
+function descCount(id, seen = new Set()) {
+  let c = 0;
+  for (const k of kidsOf(id)) if (!seen.has(k)) { seen.add(k); c += 1 + descCount(k, seen); }
+  return c;
+}
+// Супруги: вторые родители детей и явная связь spouseOf (брак без известных детей)
+function spousesOf(id) {
+  const p = people[id] || {};
+  const out = new Set();
+  for (const k of kidsOf(id)) {
+    const o = people[k].father === id ? people[k].mother : people[k].father;
+    if (o && people[o]) out.add(o);
+  }
+  for (const [sid, s] of Object.entries(people)) if (s.spouseOf === id) out.add(sid);
+  if (p.spouseOf && people[p.spouseOf]) out.add(p.spouseOf);
+  return [...out];
+}
+function addChild(parentId) {
+  openEditor({ id: null, parentOf: parentId, label: `Ребёнок: ${displayName(people[parentId])}` });
 }
 function siblingLabel(sid) {
   const s = people[sid];
@@ -1686,6 +1764,48 @@ function layout(rootNode, sizeOf, gapB, gapD) {
   return { totalB: Math.max(0, cursor - gapB), totalD: Math.max(0, acc - gapD) };
 }
 
+// Компактная раскладка: ветки придвигаются друг к другу по контурам поколений,
+// так что рядом с глубокой веткой неглубокая не оставляет пустого «столба»
+function layoutCompact(rootNode, sizeOf, gapB, gapD) {
+  const levels = [];
+  walk(rootNode, n => {
+    const s = sizeOf(n);
+    n.sb = s.b; n.sd = s.d;
+    n.extra = s.extra || 0;
+    levels[n.depth] = Math.max(levels[n.depth] || 0, s.d, s.extraD || 0);
+  });
+  const off = [];
+  let sum = 0;
+  levels.forEach((v, k) => { off[k] = sum; sum += v + gapD; });
+  // Контур ветки: для каждого поколения — [от, до] по оси b относительно центра её корня
+  function place(n) {
+    const own = [-n.sb / 2, n.sb / 2 + n.extra];
+    if (!n.kids.length) return { [n.depth]: own };
+    let acc = null;
+    const pos = [];
+    for (const k of n.kids) {
+      const c = place(k);
+      let sh = 0;
+      if (!acc) acc = { ...c };
+      else {
+        sh = -Infinity;
+        for (const d in c) if (acc[d]) sh = Math.max(sh, acc[d][1] + gapB - c[d][0]);
+        for (const d in c) acc[d] = acc[d] ? [acc[d][0], c[d][1] + sh] : [c[d][0] + sh, c[d][1] + sh];
+      }
+      pos.push(sh);
+    }
+    const mid = (pos[0] + pos[pos.length - 1]) / 2;
+    n.kids.forEach((k, i) => { k.rb = pos[i] - mid; });
+    const out = { [n.depth]: own };
+    for (const d in acc) out[d] = [acc[d][0] - mid, acc[d][1] - mid];
+    return out;
+  }
+  const cont = Object.values(place(rootNode));
+  const lo = Math.min(...cont.map(v => v[0])), hi = Math.max(...cont.map(v => v[1]));
+  (function put(n, cb) { n.cb = cb; n.d0 = off[n.depth]; n.kids.forEach(k => put(k, cb + k.rb)); })(rootNode, -lo);
+  return { totalB: hi - lo, totalD: Math.max(0, sum - gapD) };
+}
+
 // Перевод осей (b, d) в экранные (x, y) для выбранного направления
 function mapper(dir, H) {
   if (dir === "td") return (b, d) => [b, d];
@@ -1695,7 +1815,7 @@ function mapper(dir, H) {
 
 // ─── Вид «Древо» ──────────────────────────────────────────────────────────
 function makeCard(n, vertical) {
-  const sz = vertical ? SIZES.vertical : SIZES.horizontal;
+  const sz = sizesFor(vertical);
   const role = roleOf(n.path, n.sex);
   if (!n.p) {
     const card = document.createElement("div");
@@ -1714,7 +1834,7 @@ function makeCard(n, vertical) {
     if (ask) card.appendChild(ask);
     return card;
   }
-  const compact = n.depth >= 3;
+  const compact = n.depth >= smallFrom();
   const card = document.createElement("div");
   card.className = `card ${n.sex} ${n.depth === 0 ? "root" : ""} ${compact ? "compact" : ""}`;
   card.style.width = (compact ? sz.compact : sz.card) + "px";
@@ -1742,14 +1862,16 @@ function makeCard(n, vertical) {
   return card;
 }
 
-// Карточка брата/сестры в раскрытой «колоде»; без sid — кнопка добавления
+// Карточка брата/сестры в раскрытой «колоде»; без sid — кнопка добавления.
+// Под карточкой — его или её потомки (свёрнуты, пока не нажать «Дети: N»)
 function makeSibCard(n, sid, vertical) {
-  const sz = vertical ? SIZES.vertical : SIZES.horizontal;
-  const compact = n.depth >= 3;
-  const card = document.createElement("button");
-  card.type = "button";
-  card.style.width = (compact ? sz.compact : sz.card) + "px";
+  const sz = sizesFor(vertical);
+  const compact = n.depth >= smallFrom();
+  const width = (compact ? sz.compact : sz.card) + "px";
   if (!sid) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.style.width = width;
     card.className = "card sib-card add";
     card.textContent = "+ брат или сестра";
     card.addEventListener("click", () =>
@@ -1757,28 +1879,101 @@ function makeSibCard(n, sid, vertical) {
     return card;
   }
   const s = people[sid];
+  const card = document.createElement("div");
+  card.style.width = width;
   card.className = `card sib-card ${s.sex || ""} ${compact ? "compact" : ""}`;
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "card-main";
   const img = photoImg(s);
-  if (img) card.appendChild(img);
-  const parts = [["role", s.sex === "f" ? "Сестра" : "Брат"], ["name", displayName(s)]];
+  if (img) main.appendChild(img);
+  const kind = sibKind(n.id, sid);
+  const parts = [["role", sibRole(n.id, sid)], ["name", displayName(s)]];
   if (datesOf(s)) parts.push(["dates", datesOf(s)]);
+  // Единокровные: подписываем второго родителя — видно, от какого брака
+  const other = kind === "по отцу" ? s.mother : kind === "по матери" ? s.father : null;
+  if (other && people[other]) parts.push(["place", (kind === "по отцу" ? "мать: " : "отец: ") + displayName(people[other])]);
   if (s.notes) parts.push(["has-notes", "есть заметки"]);
   for (const [cls, text] of parts) {
     const d = document.createElement("div");
     d.className = cls; d.textContent = text;
-    card.appendChild(d);
+    main.appendChild(d);
   }
-  const label = `${s.sex === "f" ? "Сестра" : "Брат"}: ${displayName(n.p)}`;
+  const label = `${sibRole(n.id, sid)}: ${displayName(n.p)}`;
   card.dataset.k = sid;
   card.dataset.role = label;
-  card.addEventListener("click", () => activate(sid, label));
+  main.addEventListener("click", () => activate(sid, label));
+  card.appendChild(main);
+  const kin = kinBlock(sid);
+  if (kin) card.appendChild(kin);
   return card;
+}
+
+// Потомки человека вне линии предков: «Дети: N» раскрывает вложенный список
+function kinBlock(id) {
+  const kids = kidsOf(id);
+  if (!kids.length && !editing()) return null;
+  const box = document.createElement("div");
+  box.className = "kin";
+  const open = kinOpen.has(id) || !kids.length;
+  if (kids.length) {
+    const all = descCount(id);
+    const t = document.createElement("button");
+    t.type = "button";
+    t.className = "kin-btn";
+    t.setAttribute("aria-expanded", String(open));
+    t.textContent = `Дети: ${kids.length}` + (all > kids.length ? ` · потомков ${all}` : "");
+    t.addEventListener("click", e => {
+      e.stopPropagation();
+      if (kinOpen.has(id)) kinOpen.delete(id); else kinOpen.add(id);
+      render();
+    });
+    box.appendChild(t);
+  }
+  if (open) {
+    const list = document.createElement("div");
+    list.className = "kin-list";
+    const seen = new Set([id]);
+    (function rows(pid, into) {
+      for (const k of kidsOf(pid)) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const c = people[k];
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `sib ${c.sex || ""}`;
+        row.textContent = siblingLabel(k);
+        const label = `${c.sex === "f" ? "Дочь" : "Сын"}: ${displayName(people[pid])}`;
+        row.title = label;
+        row.addEventListener("click", e => { e.stopPropagation(); activate(k, label); });
+        into.appendChild(row);
+        if (kidsOf(k).length) {
+          const sub = document.createElement("div");
+          sub.className = "kin-sub";
+          into.appendChild(sub);
+          rows(k, sub);
+        }
+      }
+    })(id, list);
+    if (editing()) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "sib add";
+      add.textContent = "+ ребёнок";
+      add.title = "В том числе от другого брака";
+      add.addEventListener("click", e => { e.stopPropagation(); addChild(id); });
+      list.appendChild(add);
+    }
+    box.appendChild(list);
+  }
+  return box;
 }
 
 function renderTree() {
   const dir = prefs.dir, vertical = dir !== "lr";
-  const sz = vertical ? SIZES.vertical : SIZES.horizontal;
+  const sz = sizesFor(vertical);
   const rootNode = buildTree(prefs.empty && editing());
+  tree.classList.toggle("dense", !!prefs.compact);
 
   // FLIP: запоминаем, где карточки стояли до перерисовки
   const before = new Map();
@@ -1812,8 +2007,9 @@ function renderTree() {
       btn.type = "button";
       btn.className = "deck-btn" + (n.sibIds.length ? "" : " add");
       btn.textContent = n.sibIds.length ? (n.open ? "свернуть" : `+${n.sibIds.length}`) : "+";
+      const desc = n.sibIds.reduce((c, sid) => c + descCount(sid), 0);
       btn.title = n.sibIds.length
-        ? (n.open ? "Свернуть братьев и сестёр" : `Братья и сёстры: ${n.sibIds.length}. Нажмите, чтобы раскрыть`)
+        ? (n.open ? "Свернуть боковые ветви" : `Братья и сёстры: ${n.sibIds.length}` + (desc ? `, их потомки: ${desc}` : "") + ". Нажмите, чтобы раскрыть")
         : "Добавить брата или сестру";
       btn.addEventListener("click", e => {
         e.stopPropagation();
@@ -1834,7 +2030,7 @@ function renderTree() {
     }
   });
 
-  const { totalB, totalD } = layout(rootNode, n => ({
+  const { totalB, totalD } = (prefs.compact ? layoutCompact : layout)(rootNode, n => ({
     b: bOf(n.el), d: dOf(n.el),
     extra: n.sibEls.reduce((s, el) => s + bOf(el) + sz.gapB, 0),
     extraD: n.sibEls.reduce((m, el) => Math.max(m, dOf(el)), 0),
@@ -1873,7 +2069,10 @@ function renderTree() {
       const mid = k.d0 - sz.gapD / 2;
       const pts = [[n.cb, n.d0 + n.sd], [n.cb, mid], [k.cb, mid], [k.cb, k.d0]].map(([b, d]) => xy(b, d));
       const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      line.setAttribute("d", "M" + pts.map(p => p.join(",")).join(" L"));
+      // Компактно — плавная S-кривая, обычно — ломаная под прямыми углами
+      line.setAttribute("d", prefs.compact
+        ? `M${pts[0]} C${pts[1]} ${pts[2]} ${pts[3]}`
+        : "M" + pts.map(p => p.join(",")).join(" L"));
       svg.appendChild(line);
     }
   });
@@ -2856,6 +3055,8 @@ function syncToolbar() {
       ? "Режим правки: нажмите на карточку, чтобы исправить данные, на пунктирную — чтобы добавить человека."
       : "Наведите на карточку — краткая справка. Нажмите — полная: источники, журнал поиска, вопросы к семье.";
   $("opt-sibs").checked = prefs.sibs;
+  $("opt-compact").checked = !!prefs.compact;
+  $("compact-wrap").hidden = mode !== "tree";
   $("sibs-wrap").hidden = mode === "card";
   $("dir-seg").hidden = mode === "time";
   $("tl-scopes").hidden = mode !== "time";
@@ -2910,6 +3111,7 @@ for (const b of document.querySelectorAll("#dir-seg button")) {
 }
 $("opt-empty").addEventListener("change", e => { prefs.empty = e.target.checked; savePrefs(); render(); });
 $("opt-sibs").addEventListener("change", e => { prefs.sibs = e.target.checked; savePrefs(); render(); });
+$("opt-compact").addEventListener("change", e => { prefs.compact = e.target.checked; view.zoom = null; savePrefs(); render(); });
 
 
 // Справка «как пользоваться»: всплывает под «?», закрывается кликом вне неё
@@ -2968,16 +3170,32 @@ function openEditor(slot) {
   const p = slot.id ? people[slot.id] : null;
   const sex = (p && p.sex) || slot.sex;
   const role = slot.label || roleOf(slot.path || "", sex) || "Главный человек древа";
-  $("e-title").textContent = p ? displayName(p) : (slot.siblingOf ? "Добавить брата или сестру" : `Добавить: ${role.toLowerCase()}`);
-  $("e-sub").textContent = p ? role : (slot.siblingOf ? role : "Впишите то, что известно. Остальное можно добавить позже.");
+  const free = slot.siblingOf || slot.parentOf;   // новый человек вне линии предков: пол выбирают
+  $("e-title").textContent = p ? displayName(p) : slot.parentOf ? "Добавить сына или дочь" : (slot.siblingOf ? "Добавить брата или сестру" : `Добавить: ${role.toLowerCase()}`);
+  $("e-sub").textContent = p ? role : (free ? role : "Впишите то, что известно. Остальное можно добавить позже.");
+  $("f-sex").options[0].text = slot.parentOf ? "Сын" : "Брат";
+  $("f-sex").options[1].text = slot.parentOf ? "Дочь" : "Сестра";
+  // Второй родитель: известные супруги, «неизвестен» или новый — другой брак
+  $("other-wrap").hidden = !slot.parentOf;
+  $("other-name-wrap").hidden = true;
+  $("f-other-name").value = "";
+  if (slot.parentOf) {
+    const par = people[slot.parentOf] || {};
+    const sel = $("f-other");
+    sel.innerHTML = "";
+    for (const sp of spousesOf(slot.parentOf)) sel.add(new Option(displayName(people[sp]), sp));
+    sel.add(new Option("неизвестен", ""));
+    sel.add(new Option(par.sex === "f" ? "другой муж (другой брак)…" : "другая жена (другой брак)…", "+new"));
+    sel.selectedIndex = 0;
+  }
   for (const f of FIELDS) {
     const el = $("f-" + f);
     el.value = (p && p[f]) || "";
     el.disabled = !canWrite;
   }
-  $("sex-wrap").hidden = !slot.siblingOf;
+  $("sex-wrap").hidden = !free;
   $("f-sex").value = "m";
-  $("maiden-wrap").hidden = sex !== "f" && !slot.siblingOf;
+  $("maiden-wrap").hidden = sex !== "f" && !free;
   $("e-save").hidden = !canWrite;
   $("e-delete").hidden = !canWrite || !p || slot.id === ROOT;
   $("e-delete").textContent = "Удалить";
@@ -3009,6 +3227,10 @@ function openEditor(slot) {
   if (canWrite) $("f-name").focus();
 }
 
+$("f-other").addEventListener("change", () => {
+  $("other-name-wrap").hidden = $("f-other").value !== "+new";
+  if ($("f-other").value === "+new") $("f-other-name").focus();
+});
 function showError(msg) { $("e-error").textContent = msg; $("e-error").hidden = false; }
 
 $("e-cancel").addEventListener("click", () => closeEditorPanel());
@@ -3042,6 +3264,9 @@ $("person-form").addEventListener("submit", async e => {
   const data = {};
   for (const f of FIELDS) data[f] = $("f-" + f).value.trim();
   if (!data.name) { showError("Впишите хотя бы имя. Если известна только фамилия, напишите её."); return; }
+  if (current.parentOf && $("f-other").value === "+new" && !$("f-other-name").value.trim()) {
+    showError("Впишите имя второго родителя или выберите «неизвестен»."); return;
+  }
   $("e-save").disabled = true;
   try {
     const file = $("f-photo").files[0];
@@ -3059,6 +3284,24 @@ $("person-form").addEventListener("submit", async e => {
     }
     if (current.id) {
       await db.doc("people/" + current.id).update(data);
+    } else if (current.parentOf) {
+      // Ребёнок любого человека; второй родитель — известный супруг, никто или новый (другой брак)
+      const par = people[current.parentOf] || {};
+      let other = $("f-other").value || null;
+      if (other === "+new") {
+        const sref = db.collection("people").doc();
+        await sref.set({
+          name: $("f-other-name").value.trim(), sex: par.sex === "f" ? "m" : "f",
+          father: null, mother: null, spouseOf: current.parentOf, createdAt: new Date().toISOString(),
+        });
+        other = sref.id;
+      }
+      const isMother = par.sex === "f";
+      await db.collection("people").doc().set({
+        ...data, sex: $("f-sex").value,
+        father: isMother ? other : current.parentOf, mother: isMother ? current.parentOf : other,
+        createdAt: new Date().toISOString(),
+      });
     } else if (current.siblingOf) {
       // Брат или сестра: те же родители, а если их нет в древе — прямая связь
       const base = people[current.siblingOf] || {};
