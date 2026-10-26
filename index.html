@@ -686,6 +686,7 @@
   <span class="mb-spacer"></span>
   <span class="status" id="status" aria-live="polite">Загружаю древо…</span>
   <button class="icon-btn ivy-btn" type="button" id="ivy-btn" aria-pressed="false" title="Вырастить плющ по древу" aria-label="Вырастить плющ по древу"><svg viewBox="0 0 16 16"><path d="M8 14.5C8 10 6.5 6.5 3 4.5"/><path d="M8 9.5c1.6-2.8 3.8-4.2 6-4.4-.3 3-2.4 5-6 4.4z" class="fill"/><path d="M5.2 6.6C3 7 1.6 6 1.2 3.8c2.1-.4 3.6.6 4 2.8z" class="fill"/></svg></button>
+  <button class="icon-btn" type="button" id="pdf-btn" title="Скачать PDF: древо, люди, вопросы, журнал, события" aria-label="Скачать PDF"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.5M4.5 6.5 8 10l3.5-3.5M3 13.5h10"/></svg></button>
   <button class="icon-btn help-btn" type="button" id="help-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="help-pop" title="Как пользоваться">?</button>
 </nav>
 <div class="help-pop" id="help-pop" role="dialog" aria-label="Как пользоваться" hidden>
@@ -3482,6 +3483,7 @@ async function copyText(text, note, fallbackEl) {
 }
 
 function renderRequests(list) {
+  requestsAll = list;
   if (reqEditing) { reqPending = list; return; }   // не мешаем, пока человек правит письмо
   const box = $("requests");
   box.innerHTML = "";
@@ -3591,6 +3593,297 @@ $("journal-form").addEventListener("submit", async e => {
     $("status").textContent = "Запись не сохранилась. Попробуйте ещё раз.";
   }
 });
+
+// ─── Экспорт в PDF: древо, все люди, вопросы, журнал, события, письма ───
+// Библиотеку грузим только по нажатию: pdfmake со шрифтом Roboto (есть кириллица)
+let requestsAll = [];
+const PDF_LIBS = [
+  "https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/pdfmake.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/vfs_fonts.min.js",
+];
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    if (document.querySelector(`script[src="${src}"]`)) return ok();
+    const s = document.createElement("script");
+    s.src = src; s.onload = ok; s.onerror = () => fail(new Error("Не загрузилась библиотека: " + src));
+    document.head.appendChild(s);
+  });
+}
+// Фото уменьшаем до 900 px по длинной стороне, чтобы файл не разрастался
+function imageData(src, max = 900) {
+  return new Promise(ok => {
+    if (!src) return ok(null);
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        ok({ data: c.toDataURL("image/jpeg", 0.85), w: c.width, h: c.height });
+      } catch { ok(null); }
+    };
+    img.onerror = () => ok(null);
+    img.src = src;
+  });
+}
+const assetSrc = pid => photoSrc({ photo: pid });
+const PHOTO_LINK = /https:\/\/avchaykin\.github\.io\/rodoslovnaya\/photos\/([0-9a-f]{32})\.\w+/g;
+// Текст с адресами: ссылки остаются кликабельными
+function pdfText(text) {
+  const out = []; let last = 0;
+  for (const m of String(text || "").matchAll(URL_RE)) {
+    const url = cleanUrl(m[0]);
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push({ text: url, link: url, color: "#2f5d8a" });
+    last = m.index + url.length;
+  }
+  out.push(String(text || "").slice(last));
+  return out;
+}
+const fmtDay = s => { const d = new Date(s); return isNaN(d) ? "" : d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" }); };
+const nameOf = id => people[id] ? pdfSafe(displayName(people[id])) : "";
+
+// Древо прямых предков — векторным рисунком на альбомной странице (одна сторона — одна страница)
+// В шрифте PDF нет угловых скобок ⟨⟩ — заменяем обычными
+const pdfSafe = s => String(s || "").replace(/[⟨〈]/g, "‹").replace(/[⟩〉]/g, "›");
+const PAGE_L = { w: 842, h: 595, left: 40, top: 48 };
+function pedigreePages(rootNode) {
+  const sides = rootNode.kids.filter(k => k.id).map(k => ({ node: k, title: k.path === "f" ? "Древо: линия папы" : "Древо: линия мамы" }));
+  const out = [];
+  for (const { node, title } of sides) {
+    // Раскладка: листья по строкам, родитель — посередине между своими родителями
+    let leaves = 0, depth = 0;
+    const pos = new Map();
+    (function place(n, d) {
+      depth = Math.max(depth, d);
+      const kids = n.kids.filter(k => k.id);
+      if (!kids.length) { pos.set(n, { d, y: leaves++ }); return; }
+      kids.forEach(k => place(k, d + 1));
+      pos.set(n, { d, y: kids.reduce((s, k) => s + pos.get(k).y, 0) / kids.length });
+    })(node, 0);
+    const areaW = PAGE_L.w - 2 * PAGE_L.left, top = PAGE_L.top + 40, areaH = PAGE_L.h - PAGE_L.top - top - 24;
+    const colW = areaW / (depth + 1), rowH = Math.min(70, areaH / Math.max(1, leaves));
+    const boxW = colW - 14, fs = Math.max(5, Math.min(8.5, rowH / 4));
+    const X = d => PAGE_L.left + d * colW, Y = y => top + y * rowH + rowH / 2;
+    const lines = [], texts = [];
+    for (const [n, { d, y }] of pos) {
+      const p = n.p;
+      for (const k of n.kids.filter(k => k.id)) {
+        const c = pos.get(k), ev = evidenceOf(n.id, k.rel), weak = ev && ["hypothesis", "unresolved"].includes(ev.status);
+        const x0 = X(d) + boxW, xm = X(d) + boxW + 7, x1 = X(c.d);
+        lines.push({ type: "polyline", lineWidth: 0.6, lineColor: "#8a8a8a", points: [{ x: x0, y: Y(y) }, { x: xm, y: Y(y) }, { x: xm, y: Y(c.y) }, { x: x1, y: Y(c.y) }], ...(weak ? { dash: { length: 2 } } : {}) });
+      }
+      const color = p.sex === "m" ? "#3a5f8f" : "#9a3d4f";
+      lines.push({ type: "line", x1: X(d), y1: Y(y) - fs * 1.1, x2: X(d), y2: Y(y) + fs * 1.1, lineWidth: 1.6, lineColor: color });
+      texts.push({ columns: [{ width: boxW - 4, fontSize: fs, lineHeight: 1.05,
+        text: [{ text: pdfSafe(p.name || "Без имени"), bold: true }, "\n", { text: datesOf(p), color: "#666666", fontSize: fs * 0.85 }] }],
+        absolutePosition: { x: X(d) + 4, y: Y(y) - fs * 1.15 } });
+    }
+    out.push(
+      { text: title, style: "h1", tocItem: true, pageBreak: "before", pageOrientation: "landscape" },
+      { text: "Слева направо — от родителей Светланы к самым ранним известным предкам. Пунктир — родство пока не доказано.", style: "muted" },
+      { canvas: lines, absolutePosition: { x: 0, y: 0 } },
+      ...texts,
+      { text: " ", fontSize: 1 },  // последний узел в потоке, иначе pdfmake не возвращает книжную ориентацию
+    );
+  }
+  return out;
+}
+
+async function buildPdf(progress) {
+  progress("Загружаю библиотеки…");
+  for (const src of PDF_LIBS) await loadScript(src);
+
+  // Порядок людей: прямые предки по поколениям, затем остальные по фамилии
+  const pathOf = {};
+  if (people[ROOT]) walk(buildTree(false), n => { if (n.id && !(n.id in pathOf)) pathOf[n.id] = n.path; });
+  const ids = Object.keys(people).sort((a, b) => {
+    const pa = a in pathOf ? pathOf[a].length : 99, pb = b in pathOf ? pathOf[b].length : 99;
+    return pa - pb || (pathOf[a] || "").localeCompare(pathOf[b] || "") || displayName(people[a]).localeCompare(displayName(people[b]), "ru");
+  });
+  const kidsOf = id => Object.keys(people).filter(k => people[k].father === id || people[k].mother === id);
+  const roleText = id => id === ROOT ? "Главный человек древа" : id in pathOf ? roleOf(pathOf[id], people[id].sex) : "Родственник";
+
+  // Фото: портрет и все снимки, на которые ссылаются заметки
+  progress("Собираю фотографии…");
+  const photoIds = new Set();
+  for (const id of ids) {
+    const p = people[id];
+    if (p.photo) photoIds.add(p.photo);
+    for (const m of String(p.notes || "").matchAll(PHOTO_LINK)) photoIds.add(m[1]);
+  }
+  const photos = {};
+  let i = 0;
+  for (const pid of photoIds) {
+    progress(`Собираю фотографии… ${++i} из ${photoIds.size}`);
+    photos[pid] = await imageData(assetSrc(pid));
+  }
+
+  progress("Собираю книгу…");
+  const H1 = (text, toc = true) => ({ text, style: "h1", tocItem: toc, pageBreak: "before" });
+  const muted = t => ({ text: t, style: "muted" });
+  const content = [];
+  // Обложка
+  const n = ids.length, stamp = new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  content.push(
+    { text: "Родословная", style: "cover1", margin: [0, 160, 0, 6] },
+    { text: people[ROOT] ? displayName(people[ROOT]) : "", style: "cover2" },
+    { text: `${n} чел. · записей в журнале: ${logAll.length} · вопросов к семье: ${asks.length}`, style: "muted", alignment: "center", margin: [0, 18, 0, 0] },
+    { text: `Выгружено ${stamp}`, style: "muted", alignment: "center", margin: [0, 4, 0, 0] },
+    { toc: { title: { text: "Содержание", style: "h1" } }, pageBreak: "before" },
+  );
+  // Древо — по странице на линию папы и линию мамы
+  if (people[ROOT]) content.push(...pedigreePages(buildTree(false)));
+  // Люди
+  content.push({ text: "Люди", style: "h1", tocItem: true, pageBreak: "before", pageOrientation: "portrait" });
+  for (const id of ids) {
+    const p = people[id];
+    const block = [];
+    const head = [
+      { text: pdfSafe(displayName(p)), style: "h2", tocItem: id in pathOf, tocMargin: [12, 0, 0, 0] },
+      muted([roleText(id), datesOf(p), p.place].filter(Boolean).join(" · ")),
+    ];
+    const portrait = p.photo && photos[p.photo];
+    block.push(portrait ? { columns: [{ image: portrait.data, width: 70, height: Math.round(70 * portrait.h / portrait.w) }, { stack: head, margin: [10, 0, 0, 0] }], columnGap: 0 } : { stack: head });
+    // Родные
+    const rel = [];
+    for (const [key, label] of [["father", "Отец"], ["mother", "Мать"]]) {
+      if (!people[p[key]]) continue;
+      const ev = evidenceOf(id, key);
+      rel.push({ text: [{ text: label + ": ", bold: true }, nameOf(p[key]), ev ? { text: `  (${EV_LABEL[ev.status][1].toLowerCase()})`, style: "muted" } : ""] });
+    }
+    const kids = kidsOf(id);
+    if (kids.length) rel.push({ text: [{ text: "Дети: ", bold: true }, kids.map(nameOf).join(", ")] });
+    const sibs = siblingsOf(id);
+    if (sibs.length) rel.push({ text: [{ text: "Братья и сёстры: ", bold: true }, sibs.map(nameOf).join(", ")] });
+    if (rel.length) block.push({ stack: rel, margin: [0, 6, 0, 0] });
+    // Насколько доказано родство
+    for (const key of ["father", "mother"]) {
+      const ev = evidenceOf(id, key);
+      if (!ev) continue;
+      const lines = [{ text: `${key === "father" ? "Связь с отцом" : "Связь с матерью"}: ${EV_LABEL[ev.status][1]}`, bold: true }];
+      if (ev.why) lines.push({ text: pdfText(ev.why) });
+      for (const s of ev.src || []) lines.push({ text: ["• ", s.u ? { text: s.t || s.u, link: s.u, color: "#2f5d8a" } : (s.t || "")] });
+      if (ev.next) lines.push({ text: "Что проверить дальше: " + ev.next, style: "muted" });
+      block.push({ stack: lines, style: "box", margin: [0, 6, 0, 0] });
+    }
+    // Заметки
+    if (p.notes) block.push({ text: pdfText(p.notes), margin: [0, 8, 0, 0] });
+    // Снимки из заметок
+    const extra = [...new Set([...String(p.notes || "").matchAll(PHOTO_LINK)].map(m => m[1]))].filter(pid => pid !== p.photo && photos[pid]);
+    for (const pid of extra) {
+      const ph = photos[pid];
+      block.push({ image: ph.data, ...(ph.w / ph.h > 1.4 ? { width: 400 } : { height: 280 }), margin: [0, 8, 0, 0] });
+    }
+    // Вопросы к семье о человеке и о его пустых местах
+    const qs = asks.filter(x => x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`));
+    for (const { id: qid, a } of qs) {
+      const lines = [{ text: [{ text: a.status === "answered" ? "Вопрос (отвечен): " : "Вопрос к семье: ", bold: true }, a.question || ""] }];
+      for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
+      block.push({ stack: lines, style: "ask", margin: [0, 6, 0, 0] });
+    }
+    content.push({ stack: block, margin: [0, 18, 0, 0], unbreakable: false });
+    content.push({ canvas: [{ type: "line", x1: 0, y1: 6, x2: 515, y2: 6, lineWidth: 0.5, lineColor: "#cccccc" }] });
+  }
+  // Все вопросы к семье
+  content.push(H1("Вопросы к семье"));
+  const slotLabel = t => { if (!String(t).startsWith("slot:")) return nameOf(t) || t; const [, c, r] = t.split(":"); return `${r === "father" ? "Отец" : "Мать"} — ${nameOf(c)}`; };
+  for (const [title, list] of [["Открытые", asks.filter(x => x.a.status !== "answered")], ["С ответами", asks.filter(x => x.a.status === "answered")]]) {
+    if (!list.length) continue;
+    content.push({ text: title, style: "h2" });
+    for (const { id: qid, a } of list) {
+      const lines = [{ text: slotLabel(a.target), bold: true }, { text: a.question || "" }];
+      for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
+      content.push({ stack: lines, style: "ask", margin: [0, 6, 0, 0] });
+    }
+  }
+  // Журнал поиска — от старых записей к новым
+  content.push(H1("Журнал поиска"));
+  for (const l of [...logAll].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+    const who = l.author === "claude" ? "Claude" : l.author === "family" ? "Семья" : (l.author || "");
+    const about = (l.people || []).map(nameOf).filter(Boolean).join(", ");
+    content.push({ stack: [
+      muted([who, fmtDay(l.at), about].filter(Boolean).join(" · ")),
+      { text: pdfText(l.text) },
+    ], margin: [0, 10, 0, 0] });
+  }
+  // События
+  if (events.length) {
+    content.push(H1("Исторические события"));
+    for (const e of [...events].sort((a, b) => a.year - b.year)) {
+      const yrs = e.end && e.end !== e.year ? `${e.year}–${e.end}` : String(e.year);
+      content.push({ stack: [
+        { text: [{ text: yrs + "  ", bold: true }, e.title] },
+        e.where ? muted(e.where) : "",
+        e.text ? { text: pdfText(e.text) } : "",
+        e.source ? { text: pdfText(e.source), style: "muted" } : "",
+      ], margin: [0, 8, 0, 0] });
+    }
+  }
+  // Письма в архивы — видны только владельцу
+  if (requestsAll.length) {
+    content.push(H1("Письма в архивы"));
+    for (const { r } of requestsAll) {
+      const st = (REQ_STATUS.find(s => s[0] === (r.status || "draft")) || REQ_STATUS[0])[1];
+      const lines = [{ text: r.title || "Запрос", style: "h2" }, muted(st)];
+      for (const [k, v] of [["Куда", r.address], ["Как отправить", r.how], ["Что приложить", r.attachments], ["Зачем", r.why]])
+        if (v) lines.push({ text: [{ text: k + ": ", bold: true }, ...pdfText(v)] });
+      if (r.body) lines.push({ text: r.body, margin: [0, 6, 0, 0] });
+      content.push({ stack: lines, margin: [0, 10, 0, 0] });
+    }
+  }
+
+  const doc = {
+    pageSize: "A4", pageMargins: [40, 48, 40, 48],
+    info: { title: "Родословная — " + (people[ROOT] ? displayName(people[ROOT]) : "") },
+    footer: (cur, total) => cur > 1 ? { text: `${cur} / ${total}`, alignment: "center", style: "muted", margin: [0, 16, 0, 0] } : null,
+    content,
+    defaultStyle: { font: "Roboto", fontSize: 10, lineHeight: 1.25, color: "#222222" },
+    styles: {
+      cover1: { fontSize: 34, bold: true, alignment: "center" },
+      cover2: { fontSize: 20, alignment: "center" },
+      h1: { fontSize: 20, bold: true, margin: [0, 0, 0, 10] },
+      h2: { fontSize: 13, bold: true, margin: [0, 0, 0, 2] },
+      muted: { fontSize: 9, color: "#666666" },
+      box: { fontSize: 9 },
+      ask: { fontSize: 9.5, color: "#5a3d00" },
+    },
+  };
+  progress("Создаю PDF… (может занять минуту)");
+  return new Promise((ok, fail) => {
+    try { window.pdfMake.createPdf(doc).getBlob(ok); } catch (e) { fail(e); }
+  });
+}
+
+$("pdf-btn").addEventListener("click", async () => {
+  const btn = $("pdf-btn"), st = $("status"), before = st.textContent;
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const progress = t => { st.textContent = t; };
+  try {
+    const blob = await buildPdf(progress);
+    const filename = `Родословная ${new Date().toISOString().slice(0, 10)}.pdf`;
+    const dl = window.claude ? await window.claude.use("downloads") : null;
+    if (dl) {
+      try { await dl.save({ filename, data: blob }); progress("PDF сохранён."); }
+      catch (e) { progress(e && e.code === "declined" ? "Сохранение отменено." : "Не удалось сохранить PDF."); }
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      progress("PDF скачан.");
+    }
+  } catch (e) {
+    progress("Не получилось собрать PDF: " + (e && e.message || "ошибка"));
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { if (/PDF|Сохранение/.test(st.textContent)) st.textContent = before; }, 6000);
+  }
+});
+
 
 // ─── Данные ───────────────────────────────────────────────────────────────
 (async () => {
