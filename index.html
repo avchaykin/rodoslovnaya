@@ -648,6 +648,13 @@
   .e-journal summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .e-journal-list { display: grid; gap: 10px; padding: 0 12px 12px; max-height: 45vh; overflow-y: auto; }
   .e-journal-list .entry { font-size: 14px; }
+  .pdf-opts { display: grid; gap: 10px; }
+  .pdf-opts .check { font-size: 14.5px; color: var(--ink); gap: 8px; }
+  .pdf-opts .check .n { color: var(--muted); font-size: 13px; }
+  .pdf-people { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 10px; margin: 0; display: grid; gap: 6px; }
+  .pdf-people legend { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 0 4px; }
+  .pdf-sub { display: grid; gap: 6px; margin: 4px 0 0 4px; padding-left: 14px; border-left: 2px solid var(--line); }
+  .pdf-sub.off { opacity: .45; }
 </style>
 
 <nav class="menubar" aria-label="Управление древом">
@@ -790,6 +797,36 @@
 
 
 
+<dialog id="pdf-dialog" aria-labelledby="pdf-title">
+  <form method="dialog" id="pdf-form">
+    <h2 id="pdf-title">Скачать PDF</h2>
+    <div class="sub">Отметьте, что включить в файл.</div>
+    <div class="pdf-opts">
+      <label class="check"><input type="checkbox" name="tree" checked>Древо — линия папы и линия мамы</label>
+      <fieldset class="pdf-people">
+        <legend>Люди</legend>
+        <label class="check"><input type="radio" name="people" value="all" checked>Все родственники <span class="n" id="pdf-n-all"></span></label>
+        <label class="check"><input type="radio" name="people" value="direct">Только прямые предки <span class="n" id="pdf-n-direct"></span></label>
+        <label class="check"><input type="radio" name="people" value="none">Не включать</label>
+        <div class="pdf-sub">
+          <label class="check"><input type="checkbox" name="photos" checked>Фотографии</label>
+          <label class="check"><input type="checkbox" name="notes" checked>Заметки</label>
+          <label class="check"><input type="checkbox" name="evidence" checked>Насколько доказано родство, источники</label>
+          <label class="check"><input type="checkbox" name="personAsks" checked>Вопросы и ответы о человеке</label>
+        </div>
+      </fieldset>
+      <label class="check"><input type="checkbox" name="asks" checked>Все вопросы к семье с ответами</label>
+      <label class="check"><input type="checkbox" name="log" checked>Журнал поиска</label>
+      <label class="check"><input type="checkbox" name="events" checked>Исторические события</label>
+      <label class="check" id="pdf-letters-wrap"><input type="checkbox" name="letters" checked>Письма в архивы</label>
+    </div>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button class="btn" type="button" id="pdf-cancel">Отмена</button>
+      <button class="btn primary" type="submit" id="pdf-go">Скачать PDF</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="asks-dialog">
   <h2 id="a-title"></h2>
   <div class="sub">Что нужно узнать для дальнейшего поиска. Впишите всё, что помните или узнали у родных, — Claude прочитает и продолжит.</div>
@@ -3692,14 +3729,14 @@ function pedigreePages(rootNode) {
   return out;
 }
 
-async function buildPdf(progress) {
+async function buildPdf(progress, opt) {
   progress("Загружаю библиотеки…");
   for (const src of PDF_LIBS) await loadScript(src);
 
   // Порядок людей: прямые предки по поколениям, затем остальные по фамилии
   const pathOf = {};
   if (people[ROOT]) walk(buildTree(false), n => { if (n.id && !(n.id in pathOf)) pathOf[n.id] = n.path; });
-  const ids = Object.keys(people).sort((a, b) => {
+  const ids = Object.keys(people).filter(id => opt.people === "all" || (opt.people === "direct" && id in pathOf)).sort((a, b) => {
     const pa = a in pathOf ? pathOf[a].length : 99, pb = b in pathOf ? pathOf[b].length : 99;
     return pa - pb || (pathOf[a] || "").localeCompare(pathOf[b] || "") || displayName(people[a]).localeCompare(displayName(people[b]), "ru");
   });
@@ -3707,9 +3744,8 @@ async function buildPdf(progress) {
   const roleText = id => id === ROOT ? "Главный человек древа" : id in pathOf ? roleOf(pathOf[id], people[id].sex) : "Родственник";
 
   // Фото: портрет и все снимки, на которые ссылаются заметки
-  progress("Собираю фотографии…");
   const photoIds = new Set();
-  for (const id of ids) {
+  if (opt.photos) for (const id of ids) {
     const p = people[id];
     if (p.photo) photoIds.add(p.photo);
     for (const m of String(p.notes || "").matchAll(PHOTO_LINK)) photoIds.add(m[1]);
@@ -3722,11 +3758,11 @@ async function buildPdf(progress) {
   }
 
   progress("Собираю книгу…");
-  const H1 = (text, toc = true) => ({ text, style: "h1", tocItem: toc, pageBreak: "before" });
+  const H1 = (text, toc = true) => ({ text, style: "h1", tocItem: toc, pageBreak: "before", pageOrientation: "portrait" });
   const muted = t => ({ text: t, style: "muted" });
   const content = [];
   // Обложка
-  const n = ids.length, stamp = new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  const n = Object.keys(people).length, stamp = new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
   content.push(
     { text: "Родословная", style: "cover1", margin: [0, 160, 0, 6] },
     { text: people[ROOT] ? displayName(people[ROOT]) : "", style: "cover2" },
@@ -3735,9 +3771,9 @@ async function buildPdf(progress) {
     { toc: { title: { text: "Содержание", style: "h1" } }, pageBreak: "before" },
   );
   // Древо — по странице на линию папы и линию мамы
-  if (people[ROOT]) content.push(...pedigreePages(buildTree(false)));
+  if (opt.tree && people[ROOT]) content.push(...pedigreePages(buildTree(false)));
   // Люди
-  content.push({ text: "Люди", style: "h1", tocItem: true, pageBreak: "before", pageOrientation: "portrait" });
+  if (ids.length) content.push(H1(opt.people === "direct" ? "Прямые предки" : "Люди"));
   for (const id of ids) {
     const p = people[id];
     const block = [];
@@ -3746,13 +3782,13 @@ async function buildPdf(progress) {
       muted([roleText(id), datesOf(p), p.place].filter(Boolean).join(" · ")),
     ];
     const portrait = p.photo && photos[p.photo];
-    block.push(portrait ? { columns: [{ image: portrait.data, width: 70, height: Math.round(70 * portrait.h / portrait.w) }, { stack: head, margin: [10, 0, 0, 0] }], columnGap: 0 } : { stack: head });
+    block.push(portrait ? { columns: [{ width: 76, stack: [{ image: portrait.data, fit: [70, 96] }] }, { width: "*", stack: head, margin: [6, 0, 0, 0] }], columnGap: 0 } : { stack: head });
     // Родные
     const rel = [];
     for (const [key, label] of [["father", "Отец"], ["mother", "Мать"]]) {
       if (!people[p[key]]) continue;
       const ev = evidenceOf(id, key);
-      rel.push({ text: [{ text: label + ": ", bold: true }, nameOf(p[key]), ev ? { text: `  (${EV_LABEL[ev.status][1].toLowerCase()})`, style: "muted" } : ""] });
+      rel.push({ text: [{ text: label + ": ", bold: true }, nameOf(p[key]), ev && opt.evidence ? { text: `  (${EV_LABEL[ev.status][1].toLowerCase()})`, style: "muted" } : ""] });
     }
     const kids = kidsOf(id);
     if (kids.length) rel.push({ text: [{ text: "Дети: ", bold: true }, kids.map(nameOf).join(", ")] });
@@ -3760,7 +3796,7 @@ async function buildPdf(progress) {
     if (sibs.length) rel.push({ text: [{ text: "Братья и сёстры: ", bold: true }, sibs.map(nameOf).join(", ")] });
     if (rel.length) block.push({ stack: rel, margin: [0, 6, 0, 0] });
     // Насколько доказано родство
-    for (const key of ["father", "mother"]) {
+    if (opt.evidence) for (const key of ["father", "mother"]) {
       const ev = evidenceOf(id, key);
       if (!ev) continue;
       const lines = [{ text: `${key === "father" ? "Связь с отцом" : "Связь с матерью"}: ${EV_LABEL[ev.status][1]}`, bold: true }];
@@ -3770,15 +3806,15 @@ async function buildPdf(progress) {
       block.push({ stack: lines, style: "box", margin: [0, 6, 0, 0] });
     }
     // Заметки
-    if (p.notes) block.push({ text: pdfText(p.notes), margin: [0, 8, 0, 0] });
+    if (opt.notes && p.notes) block.push({ text: pdfText(p.notes), margin: [0, 8, 0, 0] });
     // Снимки из заметок
     const extra = [...new Set([...String(p.notes || "").matchAll(PHOTO_LINK)].map(m => m[1]))].filter(pid => pid !== p.photo && photos[pid]);
     for (const pid of extra) {
       const ph = photos[pid];
-      block.push({ image: ph.data, ...(ph.w / ph.h > 1.4 ? { width: 400 } : { height: 280 }), margin: [0, 8, 0, 0] });
+      block.push({ image: ph.data, fit: [400, 300], margin: [0, 8, 0, 0] });
     }
     // Вопросы к семье о человеке и о его пустых местах
-    const qs = asks.filter(x => x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`));
+    const qs = opt.personAsks ? asks.filter(x => x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`)) : [];
     for (const { id: qid, a } of qs) {
       const lines = [{ text: [{ text: a.status === "answered" ? "Вопрос (отвечен): " : "Вопрос к семье: ", bold: true }, a.question || ""] }];
       for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
@@ -3788,9 +3824,9 @@ async function buildPdf(progress) {
     content.push({ canvas: [{ type: "line", x1: 0, y1: 6, x2: 515, y2: 6, lineWidth: 0.5, lineColor: "#cccccc" }] });
   }
   // Все вопросы к семье
-  content.push(H1("Вопросы к семье"));
+  if (opt.asks && asks.length) content.push(H1("Вопросы к семье"));
   const slotLabel = t => { if (!String(t).startsWith("slot:")) return nameOf(t) || t; const [, c, r] = t.split(":"); return `${r === "father" ? "Отец" : "Мать"} — ${nameOf(c)}`; };
-  for (const [title, list] of [["Открытые", asks.filter(x => x.a.status !== "answered")], ["С ответами", asks.filter(x => x.a.status === "answered")]]) {
+  if (opt.asks) for (const [title, list] of [["Открытые", asks.filter(x => x.a.status !== "answered")], ["С ответами", asks.filter(x => x.a.status === "answered")]]) {
     if (!list.length) continue;
     content.push({ text: title, style: "h2" });
     for (const { id: qid, a } of list) {
@@ -3800,8 +3836,8 @@ async function buildPdf(progress) {
     }
   }
   // Журнал поиска — от старых записей к новым
-  content.push(H1("Журнал поиска"));
-  for (const l of [...logAll].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+  if (opt.log && logAll.length) content.push(H1("Журнал поиска"));
+  if (opt.log) for (const l of [...logAll].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
     const who = l.author === "claude" ? "Claude" : l.author === "family" ? "Семья" : (l.author || "");
     const about = (l.people || []).map(nameOf).filter(Boolean).join(", ");
     content.push({ stack: [
@@ -3810,7 +3846,7 @@ async function buildPdf(progress) {
     ], margin: [0, 10, 0, 0] });
   }
   // События
-  if (events.length) {
+  if (opt.events && events.length) {
     content.push(H1("Исторические события"));
     for (const e of [...events].sort((a, b) => a.year - b.year)) {
       const yrs = e.end && e.end !== e.year ? `${e.year}–${e.end}` : String(e.year);
@@ -3823,7 +3859,7 @@ async function buildPdf(progress) {
     }
   }
   // Письма в архивы — видны только владельцу
-  if (requestsAll.length) {
+  if (opt.letters && requestsAll.length) {
     content.push(H1("Письма в архивы"));
     for (const { r } of requestsAll) {
       const st = (REQ_STATUS.find(s => s[0] === (r.status || "draft")) || REQ_STATUS[0])[1];
@@ -3857,13 +3893,51 @@ async function buildPdf(progress) {
   });
 }
 
-$("pdf-btn").addEventListener("click", async () => {
+// Выбор разделов; запоминаем его в этом браузере
+const PDF_PREFS = "rodoslovnaya-pdf";
+const pdfForm = $("pdf-form");
+function pdfOptions() {
+  const f = pdfForm.elements, o = { people: f.people.value };
+  for (const k of ["tree", "photos", "notes", "evidence", "personAsks", "asks", "log", "events", "letters"]) o[k] = f[k].checked;
+  o.letters = o.letters && requestsAll.length > 0;
+  return o;
+}
+function syncPdfForm() {
+  const o = pdfOptions();
+  pdfForm.querySelector(".pdf-sub").classList.toggle("off", o.people === "none");
+  for (const el of pdfForm.querySelectorAll(".pdf-sub input")) el.disabled = o.people === "none";
+  $("pdf-go").disabled = !(o.tree || o.people !== "none" || o.asks || o.log || o.events || o.letters);
+}
+pdfForm.addEventListener("change", syncPdfForm);
+$("pdf-cancel").addEventListener("click", () => $("pdf-dialog").close());
+$("pdf-btn").addEventListener("click", () => {
+  if ($("pdf-btn").disabled) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(PDF_PREFS) || "null");
+    if (saved) for (const [k, v] of Object.entries(saved)) {
+      const el = pdfForm.elements[k];
+      if (!el) continue;
+      if (k === "people") el.value = v; else el.checked = !!v;
+    }
+  } catch {}
+  const ids = Object.keys(people), direct = new Set();
+  if (people[ROOT]) walk(buildTree(false), n => { if (n.id) direct.add(n.id); });
+  $("pdf-n-all").textContent = `(${ids.length})`;
+  $("pdf-n-direct").textContent = `(${direct.size})`;
+  $("pdf-letters-wrap").hidden = !requestsAll.length;
+  syncPdfForm();
+  $("pdf-dialog").showModal();
+});
+pdfForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const opt = pdfOptions();
+  try { localStorage.setItem(PDF_PREFS, JSON.stringify(opt)); } catch {}
+  $("pdf-dialog").close();
   const btn = $("pdf-btn"), st = $("status"), before = st.textContent;
-  if (btn.disabled) return;
   btn.disabled = true;
   const progress = t => { st.textContent = t; };
   try {
-    const blob = await buildPdf(progress);
+    const blob = await buildPdf(progress, opt);
     const filename = `Родословная ${new Date().toISOString().slice(0, 10)}.pdf`;
     const dl = window.claude ? await window.claude.use("downloads") : null;
     if (dl) {
