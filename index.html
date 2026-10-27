@@ -3882,11 +3882,10 @@ async function buildPdf(progress, opt) {
     }
     // Открытые вопросы к семье о человеке и о его пустых местах (отвеченные — в разделе «Вопросы к семье»)
     const qs = opt.personAsks ? asks.filter(x => (x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`)) && x.a.status !== "answered" && !(answersByAsk[x.id] || []).length) : [];
-    for (const { id: qid, a } of qs) {
-      const lines = [{ text: [{ text: a.status === "answered" ? "Вопрос (отвечен): " : "Вопрос к семье: ", bold: true }, a.question || ""] }];
-      for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
-      block.push({ stack: lines, style: "ask", margin: [0, 6, 0, 0] });
-    }
+    if (qs.length) block.push({ stack: [
+      { text: qs.length === 1 ? "Вопрос к семье:" : "Вопросы к семье:", bold: true },
+      qs.length === 1 ? { text: qs[0].a.question || "" } : { ul: qs.map(({ a }) => ({ text: a.question || "", margin: [0, 2, 0, 0] })) },
+    ], style: "ask", margin: [0, 6, 0, 0] });
     content.push({ stack: block, margin: [0, 18, 0, 0], unbreakable: false });
     content.push({ canvas: [{ type: "line", x1: 0, y1: 6, x2: 515, y2: 6, lineWidth: 0.5, lineColor: "#cccccc" }] });
   }
