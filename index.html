@@ -3865,16 +3865,23 @@ async function buildPdf(progress, opt) {
       if (ev.next) lines.push({ text: "Что проверить дальше: " + ev.next, style: "muted" });
       block.push({ stack: lines, style: "box", margin: [0, 6, 0, 0] });
     }
-    // Заметки
-    if (opt.notes && p.notes) block.push({ text: pdfText(p.notes), margin: [0, 8, 0, 0] });
-    // Снимки из заметок
-    const extra = [...new Set([...String(p.notes || "").matchAll(PHOTO_LINK)].map(m => m[1]))].filter(pid => pid !== p.photo && photos[pid]);
-    for (const pid of extra) {
-      const ph = photos[pid];
-      block.push({ image: ph.data, fit: [400, 300], margin: [0, 8, 0, 0] });
+    // Заметки: абзацы со ссылкой на снимок становятся подписями под снимком
+    const paras = String(p.notes || "").split(/\n\s*\n/);
+    const shots = [], seen = new Set();
+    const rest = paras.filter(par => {
+      const pids = [...par.matchAll(PHOTO_LINK)].map(m => m[1]).filter(pid => pid !== p.photo && photos[pid] && !seen.has(pid));
+      if (!pids.length) return true;
+      const caption = par.replace(PHOTO_LINK, "").replace(/^ФОТО/i, "Фото").replace(/^Фото\s*:\s*\n?/, "").replace(/\s*:\s*(\n|$)/, "$1").trim();
+      pids.forEach((pid, i) => { seen.add(pid); shots.push({ pid, caption: i === pids.length - 1 ? caption : "" }); });
+      return false;
+    });
+    if (opt.notes && rest.join("").trim()) block.push({ text: pdfText(rest.join("\n\n").trim()), margin: [0, 8, 0, 0] });
+    for (const { pid, caption } of shots) {
+      block.push({ image: photos[pid].data, fit: [400, 300], margin: [0, 8, 0, 0] });
+      if (caption) block.push({ text: pdfText(caption), style: "muted", margin: [0, 3, 0, 0] });
     }
-    // Вопросы к семье о человеке и о его пустых местах
-    const qs = opt.personAsks ? asks.filter(x => x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`)) : [];
+    // Открытые вопросы к семье о человеке и о его пустых местах (отвеченные — в разделе «Вопросы к семье»)
+    const qs = opt.personAsks ? asks.filter(x => (x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`)) && x.a.status !== "answered" && !(answersByAsk[x.id] || []).length) : [];
     for (const { id: qid, a } of qs) {
       const lines = [{ text: [{ text: a.status === "answered" ? "Вопрос (отвечен): " : "Вопрос к семье: ", bold: true }, a.question || ""] }];
       for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
