@@ -3832,9 +3832,24 @@ async function buildPdf(progress, opt) {
   );
   // Древо — по странице на линию папы и линию мамы
   if (opt.tree && people[ROOT]) content.push(...pedigreePages(buildTree(false)));
-  // Люди
-  if (ids.length) content.push(H1(opt.people === "direct" ? "Прямые предки" : "Люди"));
-  for (const id of ids) {
+  // Линия каждого человека: прямые предки — по первой букве пути в древе, остальные родственники —
+  // по ближайшему прямому предку через связи родитель–ребёнок. Светлана, её сестра и не связанные с древом — «общие».
+  const sideOf = {};
+  const common = new Set([ROOT, ...siblingsOf(ROOT), ...kidsOf(ROOT)]);
+  const queue = [];
+  for (const [id, path] of Object.entries(pathOf)) if (path && !common.has(id)) { sideOf[id] = path[0]; queue.push(id); }
+  while (queue.length) {
+    const id = queue.shift(), p = people[id];
+    for (const nb of [p.father, p.mother, ...kidsOf(id)]) {
+      if (!nb || !people[nb] || nb in sideOf || common.has(nb)) continue;
+      sideOf[nb] = sideOf[id]; queue.push(nb);
+    }
+  }
+  const askSide = a => sideOf[String(a.target).replace(/^slot:([^:]+):.*$/, "$1")];
+  const logSide = l => { const s = new Set((l.people || []).map(x => sideOf[x]).filter(Boolean)); return s.size === 1 ? [...s][0] : undefined; };
+  const LINES = [["f", "Линия папы", people[ROOT]?.father], ["m", "Линия мамы", people[ROOT]?.mother]];
+
+  const personBlock = id => {
     const p = people[id];
     const block = [];
     const head = [
@@ -3888,31 +3903,59 @@ async function buildPdf(progress, opt) {
     ], style: "ask", margin: [0, 6, 0, 0] });
     content.push({ stack: block, margin: [0, 18, 0, 0], unbreakable: false });
     content.push({ canvas: [{ type: "line", x1: 0, y1: 6, x2: 515, y2: 6, lineWidth: 0.5, lineColor: "#cccccc" }] });
-  }
-  // Отчёты исследования
-  if (opt.reports) for (const r of reportsAll) content.push(...reportToPdf(r));
-  // Все вопросы к семье
-  if (opt.asks && asks.length) content.push(H1("Вопросы к семье"));
+  };
   const slotLabel = t => { if (!String(t).startsWith("slot:")) return nameOf(t) || t; const [, c, r] = t.split(":"); return `${r === "father" ? "Отец" : "Мать"} — ${nameOf(c)}`; };
-  if (opt.asks) for (const [title, list] of [["Открытые", asks.filter(x => x.a.status !== "answered")], ["С ответами", asks.filter(x => x.a.status === "answered")]]) {
-    if (!list.length) continue;
-    content.push({ text: title, style: "h2" });
-    for (const { id: qid, a } of list) {
-      const lines = [{ text: slotLabel(a.target), bold: true }, { text: a.question || "" }];
-      for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
-      content.push({ stack: lines, style: "ask", margin: [0, 6, 0, 0] });
+  const asksSection = (title, list) => {
+    if (!opt.asks || !list.length) return;
+    content.push(H1(title));
+    for (const [sub, part] of [["Открытые", list.filter(x => x.a.status !== "answered")], ["С ответами", list.filter(x => x.a.status === "answered")]]) {
+      if (!part.length) continue;
+      content.push({ text: sub, style: "h2" });
+      for (const { id: qid, a } of part) {
+        const lines = [{ text: slotLabel(a.target), bold: true }, { text: a.question || "" }];
+        for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
+        content.push({ stack: lines, style: "ask", margin: [0, 6, 0, 0] });
+      }
     }
-  }
+  };
   // Журнал поиска — от старых записей к новым
-  if (opt.log && logAll.length) content.push(H1("Журнал поиска"));
-  if (opt.log) for (const l of [...logAll].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
-    const who = l.author === "claude" ? "Claude" : l.author === "family" ? "Семья" : (l.author || "");
-    const about = (l.people || []).map(nameOf).filter(Boolean).join(", ");
-    content.push({ stack: [
-      muted([who, fmtDay(l.at), about].filter(Boolean).join(" · ")),
-      { text: pdfText(l.text) },
-    ], margin: [0, 10, 0, 0] });
+  const logSection = (title, list) => {
+    if (!opt.log || !list.length) return;
+    content.push(H1(title));
+    for (const l of [...list].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+      const who = l.author === "claude" ? "Claude" : l.author === "family" ? "Семья" : (l.author || "");
+      const about = (l.people || []).map(nameOf).filter(Boolean).join(", ");
+      content.push({ stack: [
+        muted([who, fmtDay(l.at), about].filter(Boolean).join(" · ")),
+        { text: pdfText(l.text) },
+      ], margin: [0, 10, 0, 0] });
+    }
+  };
+
+  // Светлана и её сестра — в начале, до разделения на линии
+  const commonIds = ids.filter(id => common.has(id));
+  if (commonIds.length) { content.push(H1(displayName(people[ROOT]), false)); commonIds.forEach(personBlock); }
+  // Две части подряд — их легко разделить на два документа
+  for (const [side, title, headId] of LINES) {
+    content.push(
+      { text: title, style: "cover1", tocItem: true, pageBreak: "before", pageOrientation: "portrait", margin: [0, 200, 0, 6] },
+      { text: people[headId] ? `${displayName(people[headId])} и ${people[headId].sex === "f" ? "её" : "его"} предки` : "", style: "cover2" },
+    );
+    const sideIds = ids.filter(id => sideOf[id] === side);
+    if (sideIds.length) { content.push(H1(`${opt.people === "direct" ? "Прямые предки" : "Люди"} — ${title.toLowerCase()}`)); sideIds.forEach(personBlock); }
+    asksSection(`Вопросы к семье — ${title.toLowerCase()}`, asks.filter(x => askSide(x.a) === side));
+    logSection(`Журнал поиска — ${title.toLowerCase()}`, logAll.filter(l => logSide(l) === side));
   }
+  // Общие материалы: отчёты по обеим линиям, остальные вопросы и записи журнала, события, письма
+  const restIds = ids.filter(id => !common.has(id) && !sideOf[id]);
+  const restAsks = asks.filter(x => !askSide(x.a)), restLog = logAll.filter(l => !logSide(l));
+  if ((opt.reports && reportsAll.length) || restIds.length || (opt.asks && restAsks.length) || (opt.log && restLog.length) || (opt.events && events.length) || (opt.letters && requestsAll.length))
+    content.push({ text: "Общие материалы", style: "cover1", tocItem: true, pageBreak: "before", pageOrientation: "portrait", margin: [0, 200, 0, 6] },
+      { text: "Отчёты исследования по обеим линиям, события и то, что не относится к одной линии", style: "cover2", fontSize: 13 });
+  if (opt.reports) for (const r of reportsAll) content.push(...reportToPdf(r));
+  if (restIds.length) { content.push(H1("Другие родственники")); restIds.forEach(personBlock); }
+  asksSection("Вопросы к семье — общие", restAsks);
+  logSection("Журнал поиска — общие записи", restLog);
   // События
   if (opt.events && events.length) {
     content.push(H1("Исторические события"));
