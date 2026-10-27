@@ -3877,8 +3877,8 @@ async function buildPdf(progress, opt) {
     });
     if (opt.notes && rest.join("").trim()) block.push({ text: pdfText(rest.join("\n\n").trim()), margin: [0, 8, 0, 0] });
     for (const { pid, caption } of shots) {
-      block.push({ image: photos[pid].data, fit: [400, 300], margin: [0, 8, 0, 0] });
-      if (caption) block.push({ text: pdfText(caption), style: "muted", margin: [0, 3, 0, 0] });
+      // Снимок и подпись не разрываются между страницами
+      block.push({ stack: [{ image: photos[pid].data, fit: [400, 300] }, caption ? { text: pdfText(caption), style: "muted", margin: [0, 3, 0, 0] } : ""], unbreakable: true, margin: [0, 8, 0, 0] });
     }
     // Открытые вопросы к семье о человеке и о его пустых местах (отвеченные — в разделе «Вопросы к семье»)
     const qs = opt.personAsks ? asks.filter(x => (x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`)) && x.a.status !== "answered" && !(answersByAsk[x.id] || []).length) : [];
