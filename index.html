@@ -802,7 +802,13 @@
     <h2 id="pdf-title">Скачать PDF</h2>
     <div class="sub">Отметьте, что включить в файл.</div>
     <div class="pdf-opts">
-      <label class="check"><input type="checkbox" name="tree" checked>Древо — линия папы и линия мамы</label>
+      <fieldset class="pdf-people">
+        <legend>Линия</legend>
+        <label class="check"><input type="radio" name="side" value="both" checked>Обе линии — один файл</label>
+        <label class="check"><input type="radio" name="side" value="f">Только линия папы</label>
+        <label class="check"><input type="radio" name="side" value="m">Только линия мамы</label>
+      </fieldset>
+      <label class="check"><input type="checkbox" name="tree" checked>Древо</label>
       <fieldset class="pdf-people">
         <legend>Люди</legend>
         <label class="check"><input type="radio" name="people" value="all" checked>Все родственники <span class="n" id="pdf-n-all"></span></label>
@@ -3746,8 +3752,8 @@ function reportToPdf(r) {
 // В шрифте PDF нет угловых скобок ⟨⟩ и стрелок — заменяем кавычками-уголками
 const pdfSafe = s => String(s || "").replace(/[⟨〈]/g, "‹").replace(/[⟩〉]/g, "›").replace(/→/g, "›").replace(/←/g, "‹");
 const PAGE_L = { w: 842, h: 595, left: 40, top: 48 };
-function pedigreePages(rootNode) {
-  const sides = rootNode.kids.filter(k => k.id).map(k => ({ node: k, title: k.path === "f" ? "Древо: линия папы" : "Древо: линия мамы" }));
+function pedigreePages(rootNode, only) {
+  const sides = rootNode.kids.filter(k => k.id && (!only || k.path === only)).map(k => ({ node: k, title: k.path === "f" ? "Древо: линия папы" : "Древо: линия мамы" }));
   const out = [];
   for (const { node, title } of sides) {
     // Раскладка: листья по строкам, родитель — посередине между своими родителями
@@ -3801,6 +3807,25 @@ async function buildPdf(progress, opt) {
     return pa - pb || (pathOf[a] || "").localeCompare(pathOf[b] || "") || displayName(people[a]).localeCompare(displayName(people[b]), "ru");
   });
   const kidsOf = id => Object.keys(people).filter(k => people[k].father === id || people[k].mother === id);
+  // Линия каждого человека: прямые предки — по первой букве пути в древе, остальные родственники —
+  // по ближайшему прямому предку через связи родитель–ребёнок. Светлана, её сестра и не связанные с древом — «общие».
+  const sideOf = {};
+  const common = new Set([ROOT, ...siblingsOf(ROOT), ...kidsOf(ROOT)]);
+  const queue = [];
+  for (const [id, path] of Object.entries(pathOf)) if (path && !common.has(id)) { sideOf[id] = path[0]; queue.push(id); }
+  while (queue.length) {
+    const id = queue.shift(), p = people[id];
+    for (const nb of [p.father, p.mother, ...kidsOf(id)]) {
+      if (!nb || !people[nb] || nb in sideOf || common.has(nb)) continue;
+      sideOf[nb] = sideOf[id]; queue.push(nb);
+    }
+  }
+  const askSide = a => sideOf[String(a.target).replace(/^slot:([^:]+):.*$/, "$1")];
+  const logSide = l => { const s = new Set((l.people || []).map(x => sideOf[x]).filter(Boolean)); return s.size === 1 ? [...s][0] : undefined; };
+  const LINES = [["f", "Линия папы", people[ROOT]?.father], ["m", "Линия мамы", people[ROOT]?.mother]];
+  // Файл по одной линии: только Светлана с сестрой, люди этой линии и не привязанные ни к одной
+  const side1 = opt.side === "f" || opt.side === "m" ? opt.side : null;
+  if (side1) for (let k = ids.length - 1; k >= 0; k--) if (sideOf[ids[k]] && sideOf[ids[k]] !== side1) ids.splice(k, 1);
   const roleText = id => id === ROOT ? "Главный человек древа" : id in pathOf ? roleOf(pathOf[id], people[id].sex) : "Родственник";
 
   // Фото: портрет и все снимки, на которые ссылаются заметки
@@ -3822,32 +3847,16 @@ async function buildPdf(progress, opt) {
   const muted = t => ({ text: t, style: "muted" });
   const content = [];
   // Обложка
-  const n = Object.keys(people).length, stamp = new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  const n = ids.length, stamp = new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
   content.push(
     { text: "Родословная", style: "cover1", margin: [0, 160, 0, 6] },
-    { text: people[ROOT] ? displayName(people[ROOT]) : "", style: "cover2" },
+    { text: (people[ROOT] ? displayName(people[ROOT]) : "") + (side1 ? (side1 === "f" ? " · линия папы" : " · линия мамы") : ""), style: "cover2" },
     { text: `${n} чел. · записей в журнале: ${logAll.length} · вопросов к семье: ${asks.length}`, style: "muted", alignment: "center", margin: [0, 18, 0, 0] },
     { text: `Выгружено ${stamp}`, style: "muted", alignment: "center", margin: [0, 4, 0, 0] },
     { toc: { title: { text: "Содержание", style: "h1" } }, pageBreak: "before" },
   );
   // Древо — по странице на линию папы и линию мамы
-  if (opt.tree && people[ROOT]) content.push(...pedigreePages(buildTree(false)));
-  // Линия каждого человека: прямые предки — по первой букве пути в древе, остальные родственники —
-  // по ближайшему прямому предку через связи родитель–ребёнок. Светлана, её сестра и не связанные с древом — «общие».
-  const sideOf = {};
-  const common = new Set([ROOT, ...siblingsOf(ROOT), ...kidsOf(ROOT)]);
-  const queue = [];
-  for (const [id, path] of Object.entries(pathOf)) if (path && !common.has(id)) { sideOf[id] = path[0]; queue.push(id); }
-  while (queue.length) {
-    const id = queue.shift(), p = people[id];
-    for (const nb of [p.father, p.mother, ...kidsOf(id)]) {
-      if (!nb || !people[nb] || nb in sideOf || common.has(nb)) continue;
-      sideOf[nb] = sideOf[id]; queue.push(nb);
-    }
-  }
-  const askSide = a => sideOf[String(a.target).replace(/^slot:([^:]+):.*$/, "$1")];
-  const logSide = l => { const s = new Set((l.people || []).map(x => sideOf[x]).filter(Boolean)); return s.size === 1 ? [...s][0] : undefined; };
-  const LINES = [["f", "Линия папы", people[ROOT]?.father], ["m", "Линия мамы", people[ROOT]?.mother]];
+  if (opt.tree && people[ROOT]) content.push(...pedigreePages(buildTree(false), side1));
 
   const personBlock = id => {
     const p = people[id];
@@ -3936,7 +3945,7 @@ async function buildPdf(progress, opt) {
   const commonIds = ids.filter(id => common.has(id));
   if (commonIds.length) { content.push(H1(displayName(people[ROOT]), false)); commonIds.forEach(personBlock); }
   // Две части подряд — их легко разделить на два документа
-  for (const [side, title, headId] of LINES) {
+  for (const [side, title, headId] of LINES.filter(l => !side1 || l[0] === side1)) {
     content.push(
       { text: title, style: "cover1", tocItem: true, pageBreak: "before", pageOrientation: "portrait", margin: [0, 200, 0, 6] },
       { text: people[headId] ? `${displayName(people[headId])} и ${people[headId].sex === "f" ? "её" : "его"} предки` : "", style: "cover2" },
@@ -4012,7 +4021,7 @@ async function buildPdf(progress, opt) {
 const PDF_PREFS = "rodoslovnaya-pdf";
 const pdfForm = $("pdf-form");
 function pdfOptions() {
-  const f = pdfForm.elements, o = { people: f.people.value };
+  const f = pdfForm.elements, o = { people: f.people.value, side: f.side.value };
   for (const k of ["tree", "photos", "notes", "evidence", "personAsks", "reports", "asks", "log", "events", "letters"]) o[k] = f[k].checked;
   o.reports = o.reports && reportsAll.length > 0;
   o.letters = o.letters && requestsAll.length > 0;
@@ -4033,7 +4042,7 @@ $("pdf-btn").addEventListener("click", () => {
     if (saved) for (const [k, v] of Object.entries(saved)) {
       const el = pdfForm.elements[k];
       if (!el) continue;
-      if (k === "people") el.value = v; else el.checked = !!v;
+      if (k === "people" || k === "side") el.value = v; else el.checked = !!v;
     }
   } catch {}
   const ids = Object.keys(people), direct = new Set();
@@ -4056,7 +4065,7 @@ pdfForm.addEventListener("submit", async e => {
   const progress = t => { st.textContent = t; };
   try {
     const blob = await buildPdf(progress, opt);
-    const filename = `Родословная ${new Date().toISOString().slice(0, 10)}.pdf`;
+    const filename = `Родословная${opt.side === "f" ? " — линия папы" : opt.side === "m" ? " — линия мамы" : ""} ${new Date().toISOString().slice(0, 10)}.pdf`;
     const dl = window.claude ? await window.claude.use("downloads") : null;
     if (dl) {
       try { await dl.save({ filename, data: blob }); progress("PDF сохранён."); }
