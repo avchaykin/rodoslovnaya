@@ -3826,6 +3826,48 @@ async function buildPdf(progress, opt) {
   // Файл по одной линии: только Светлана с сестрой, люди этой линии и не привязанные ни к одной
   const side1 = opt.side === "f" || opt.side === "m" ? opt.side : null;
   if (side1) for (let k = ids.length - 1; k >= 0; k--) if (sideOf[ids[k]] && sideOf[ids[k]] !== side1) ids.splice(k, 1);
+  // Общие материалы делим по ключевым словам: фамилиям и местам людей каждой линии.
+  // В файл одной линии не идёт ничего, где упомянута другая
+  const KEY = { f: new Set(["папин", "по папе", "линия папы", "линии папы"]), m: new Set(["мамин", "по маме", "линия мамы", "линии мамы"]) };
+  const stemOf = w => w.toLowerCase().replace(/[аяоеыиуйь]+$/, "");
+  for (const [id, s] of Object.entries(sideOf)) {
+    const p = people[id], name = String(p.name || "").split(/\s+/);
+    const words = [name.length > 1 ? name[name.length - 1] : "", p.maiden, ...String(p.place || "").split(/[^А-Яа-яЁё]+/)];
+    for (const w of words) if (w && /^[А-ЯЁ]/.test(w) && stemOf(w).length >= 5) KEY[s].add(stemOf(w));
+  }
+  for (const w of [...KEY.f]) if (KEY.m.has(w)) { KEY.f.delete(w); KEY.m.delete(w); }
+  // Губернии и уезды линий; город самой Светланы — общий
+  for (const w of ["сураж", "брянск", "чернигов", "клинц", "унеч"]) KEY.f.add(w);
+  for (const w of ["симбирск", "мордов", "ардатов", "атяшев"]) KEY.m.add(w);
+  for (const w of String(people[ROOT]?.place || "").split(/[^А-Яа-яЁё]+/)) { KEY.f.delete(stemOf(w)); KEY.m.delete(stemOf(w)); }
+  const other = side1 && (side1 === "f" ? "m" : "f");
+  const fits = t => { if (!other) return true; const low = String(t || "").toLowerCase(); for (const w of KEY[other]) if (low.includes(w)) return false; return true; };
+  // Markdown отчёта: раздел с заголовком другой линии пропускаем целиком, абзацы, пункты списков и строки таблиц — по одному
+  const lineMd = md => {
+    if (!other) return md;
+    const out = [];
+    let skip = 0, dropList = false;
+    for (const block of String(md || "").split(/\n\s*\n/)) {
+      const h = block.match(/^(#+)\s/);
+      if (h) {
+        if (skip && h[1].length > skip) continue;
+        skip = 0;
+        if (!fits(block.split("\n")[0])) { skip = h[1].length; continue; }
+      } else if (skip) continue;
+      const isList = /^\s*([-*+]|\d+\.|\|)/.test(block);
+      if (!isList) { dropList = !fits(block); if (!dropList) out.push(block); continue; }
+      if (dropList) continue;
+      // Пункт списка вместе с вложенными строками
+      const items = [];
+      for (const line of block.split("\n")) if (/^\S/.test(line) || !items.length) items.push([line]); else items[items.length - 1].push(line);
+      const kept = items.filter(it => fits(it.join("\n")));
+      if (kept.length && !(/^\|/.test(block) && kept.length <= 2)) out.push(kept.map(it => it.join("\n")).join("\n"));
+    }
+    return out.join("\n\n");
+  };
+  // Свободный текст: строку с другой линией сокращаем до предложений без неё
+  const lineText = t => !other ? t : String(t || "").split("\n").map(line => fits(line) ? line : line.split(/(?<=[.!?;])\s+/).filter(fits).join(" "))
+    .filter((line, k, all) => line.trim() || (k > 0 && all[k - 1].trim())).join("\n").trim();
   const roleText = id => id === ROOT ? "Главный человек древа" : id in pathOf ? roleOf(pathOf[id], people[id].sex) : "Родственник";
 
   // Фото: портрет и все снимки, на которые ссылаются заметки
@@ -3842,6 +3884,12 @@ async function buildPdf(progress, opt) {
     photos[pid] = await imageData(assetSrc(pid));
   }
 
+  const askText = x => [x.a.question, ...(answersByAsk[x.id] || []).map(y => y.text)].join(" ");
+  const askPick = asks.filter(x => !side1 || askSide(x.a) === side1 || (!askSide(x.a) && fits(askText(x))));
+  const logPick = logAll.filter(l => !side1 || logSide(l) === side1 || (!logSide(l) && fits(l.text))).map(l => side1 ? { ...l, text: lineText(l.text) } : l).filter(l => String(l.text || "").trim());
+  const reportsPick = !side1 ? reportsAll : reportsAll.map(r => r.kind === "table" ? { ...r, rows: (r.rows || []).filter(row => fits((row.cells || row).join(" "))) } : { ...r, text: lineMd(r.text) });
+  const eventsPick = !side1 ? events : events.filter(e => fits([e.title, e.where].join(" ")) && (e.scope !== "place" || fits(e.text))).map(e => ({ ...e, text: lineText(e.text) }));
+  const lettersPick = requestsAll.filter(({ r }) => fits([r.title, r.address, r.why, r.body].join(" ")));
   progress("Собираю книгу…");
   const H1 = (text, toc = true) => ({ text, style: "h1", tocItem: toc, pageBreak: "before", pageOrientation: "portrait" });
   const muted = t => ({ text: t, style: "muted" });
@@ -3851,7 +3899,7 @@ async function buildPdf(progress, opt) {
   content.push(
     { text: "Родословная", style: "cover1", margin: [0, 160, 0, 6] },
     { text: (people[ROOT] ? displayName(people[ROOT]) : "") + (side1 ? (side1 === "f" ? " · линия папы" : " · линия мамы") : ""), style: "cover2" },
-    { text: `${n} чел. · записей в журнале: ${logAll.length} · вопросов к семье: ${asks.length}`, style: "muted", alignment: "center", margin: [0, 18, 0, 0] },
+    { text: `${n} чел. · записей в журнале: ${logPick.length} · вопросов к семье: ${askPick.length}`, style: "muted", alignment: "center", margin: [0, 18, 0, 0] },
     { text: `Выгружено ${stamp}`, style: "muted", alignment: "center", margin: [0, 4, 0, 0] },
     { toc: { title: { text: "Содержание", style: "h1" } }, pageBreak: "before" },
   );
@@ -3869,8 +3917,9 @@ async function buildPdf(progress, opt) {
     block.push(portrait ? { columns: [{ width: 76, stack: [{ image: portrait.data, fit: [70, 96] }] }, { width: "*", stack: head, margin: [6, 0, 0, 0] }], columnGap: 0 } : { stack: head });
     // Родные
     const rel = [];
+    const parentKeys = side1 && common.has(id) ? [side1 === "f" ? "father" : "mother"] : ["father", "mother"];
     for (const [key, label] of [["father", "Отец"], ["mother", "Мать"]]) {
-      if (!people[p[key]]) continue;
+      if (!people[p[key]] || !parentKeys.includes(key)) continue;
       const ev = evidenceOf(id, key);
       rel.push({ text: [{ text: label + ": ", bold: true }, nameOf(p[key]), ev && opt.evidence ? { text: `  (${EV_LABEL[ev.status][1].toLowerCase()})`, style: "muted" } : ""] });
     }
@@ -3880,11 +3929,11 @@ async function buildPdf(progress, opt) {
     if (sibs.length) rel.push({ text: [{ text: "Братья и сёстры: ", bold: true }, sibs.map(nameOf).join(", ")] });
     if (rel.length) block.push({ stack: rel, margin: [0, 6, 0, 0] });
     // Насколько доказано родство
-    if (opt.evidence) for (const key of ["father", "mother"]) {
+    if (opt.evidence) for (const key of parentKeys) {
       const ev = evidenceOf(id, key);
       if (!ev) continue;
       const lines = [{ text: `${key === "father" ? "Связь с отцом" : "Связь с матерью"}: ${EV_LABEL[ev.status][1]}`, bold: true }];
-      if (ev.why) lines.push({ text: pdfText(ev.why) });
+      if (ev.why) lines.push({ text: pdfText(lineText(ev.why)) });
       for (const s of ev.src || []) lines.push({ text: ["• ", s.u ? { text: s.t || s.u, link: s.u, color: "#2f5d8a" } : (s.t || "")] });
       if (ev.next) lines.push({ text: "Что проверить дальше: " + ev.next, style: "muted" });
       block.push({ stack: lines, style: "box", margin: [0, 6, 0, 0] });
@@ -3899,16 +3948,17 @@ async function buildPdf(progress, opt) {
       pids.forEach((pid, i) => { seen.add(pid); shots.push({ pid, caption: i === pids.length - 1 ? caption : "" }); });
       return false;
     });
-    if (opt.notes && rest.join("").trim()) block.push({ text: pdfText(rest.join("\n\n").trim()), margin: [0, 8, 0, 0] });
+    const notesText = lineText(rest.join("\n\n").trim());
+    if (opt.notes && notesText) block.push({ text: pdfText(notesText), margin: [0, 8, 0, 0] });
     for (const { pid, caption } of shots) {
       // Снимок и подпись не разрываются между страницами
-      block.push({ stack: [{ image: photos[pid].data, fit: [400, 300] }, caption ? { text: pdfText(caption), style: "muted", margin: [0, 3, 0, 0] } : ""], unbreakable: true, margin: [0, 8, 0, 0] });
+      block.push({ stack: [{ image: photos[pid].data, fit: [400, 300] }, caption ? { text: pdfText(lineText(caption)), style: "muted", margin: [0, 3, 0, 0] } : ""], unbreakable: true, margin: [0, 8, 0, 0] });
     }
     // Открытые вопросы к семье о человеке и о его пустых местах (отвеченные — в разделе «Вопросы к семье»)
     const qs = opt.personAsks ? asks.filter(x => (x.a.target === id || String(x.a.target).startsWith(`slot:${id}:`)) && x.a.status !== "answered" && !(answersByAsk[x.id] || []).length) : [];
     if (qs.length) block.push({ stack: [
       { text: qs.length === 1 ? "Вопрос к семье:" : "Вопросы к семье:", bold: true },
-      qs.length === 1 ? { text: qs[0].a.question || "" } : { ul: qs.map(({ a }) => ({ text: a.question || "", margin: [0, 2, 0, 0] })) },
+      qs.length === 1 ? { text: lineText(qs[0].a.question || "") } : { ul: qs.map(({ a }) => ({ text: lineText(a.question || ""), margin: [0, 2, 0, 0] })) },
     ], style: "ask", margin: [0, 6, 0, 0] });
     content.push({ stack: block, margin: [0, 18, 0, 0], unbreakable: false });
     content.push({ canvas: [{ type: "line", x1: 0, y1: 6, x2: 515, y2: 6, lineWidth: 0.5, lineColor: "#cccccc" }] });
@@ -3921,8 +3971,8 @@ async function buildPdf(progress, opt) {
       if (!part.length) continue;
       content.push({ text: sub, style: "h2" });
       for (const { id: qid, a } of part) {
-        const lines = [{ text: slotLabel(a.target), bold: true }, { text: a.question || "" }];
-        for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(ans.text)] });
+        const lines = [{ text: slotLabel(a.target), bold: true }, { text: lineText(a.question || "") }];
+        for (const ans of answersByAsk[qid] || []) lines.push({ text: [{ text: `Ответ${ans.at ? ", " + fmtDay(ans.at) : ""}: `, bold: true }, ...pdfText(lineText(ans.text))] });
         content.push({ stack: lines, style: "ask", margin: [0, 6, 0, 0] });
       }
     }
@@ -3933,7 +3983,7 @@ async function buildPdf(progress, opt) {
     content.push(H1(title));
     for (const l of [...list].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
       const who = l.author === "claude" ? "Claude" : l.author === "family" ? "Семья" : (l.author || "");
-      const about = (l.people || []).map(nameOf).filter(Boolean).join(", ");
+      const about = (l.people || []).filter(x => !side1 || !sideOf[x] || sideOf[x] === side1).map(nameOf).filter(Boolean).join(", ");
       content.push({ stack: [
         muted([who, fmtDay(l.at), about].filter(Boolean).join(" · ")),
         { text: pdfText(l.text) },
@@ -3952,23 +4002,23 @@ async function buildPdf(progress, opt) {
     );
     const sideIds = ids.filter(id => sideOf[id] === side);
     if (sideIds.length) { content.push(H1(`${opt.people === "direct" ? "Прямые предки" : "Люди"} — ${title.toLowerCase()}`)); sideIds.forEach(personBlock); }
-    asksSection(`Вопросы к семье — ${title.toLowerCase()}`, asks.filter(x => askSide(x.a) === side));
-    logSection(`Журнал поиска — ${title.toLowerCase()}`, logAll.filter(l => logSide(l) === side));
+    asksSection(`Вопросы к семье — ${title.toLowerCase()}`, askPick.filter(x => askSide(x.a) === side));
+    logSection(`Журнал поиска — ${title.toLowerCase()}`, logPick.filter(l => logSide(l) === side));
   }
   // Общие материалы: отчёты по обеим линиям, остальные вопросы и записи журнала, события, письма
-  const restIds = ids.filter(id => !common.has(id) && !sideOf[id]);
-  const restAsks = asks.filter(x => !askSide(x.a)), restLog = logAll.filter(l => !logSide(l));
-  if ((opt.reports && reportsAll.length) || restIds.length || (opt.asks && restAsks.length) || (opt.log && restLog.length) || (opt.events && events.length) || (opt.letters && requestsAll.length))
-    content.push({ text: "Общие материалы", style: "cover1", tocItem: true, pageBreak: "before", pageOrientation: "portrait", margin: [0, 200, 0, 6] },
-      { text: "Отчёты исследования по обеим линиям, события и то, что не относится к одной линии", style: "cover2", fontSize: 13 });
-  if (opt.reports) for (const r of reportsAll) content.push(...reportToPdf(r));
+  const restIds = ids.filter(id => !common.has(id) && !sideOf[id] && fits([people[id].name, people[id].maiden, people[id].place, people[id].notes].join(" ")));
+  const restAsks = askPick.filter(x => !askSide(x.a)), restLog = logPick.filter(l => !logSide(l));
+  if ((opt.reports && reportsPick.length) || restIds.length || (opt.asks && restAsks.length) || (opt.log && restLog.length) || (opt.events && eventsPick.length) || (opt.letters && lettersPick.length))
+    content.push({ text: side1 ? "Материалы исследования" : "Общие материалы", style: "cover1", tocItem: true, pageBreak: "before", pageOrientation: "portrait", margin: [0, 200, 0, 6] },
+      { text: side1 ? `Отчёты, события и записи — только то, что касается ${side1 === "f" ? "линии папы" : "линии мамы"}` : "Отчёты исследования по обеим линиям, события и то, что не относится к одной линии", style: "cover2", fontSize: 13 });
+  if (opt.reports) for (const r of reportsPick) content.push(...reportToPdf(r));
   if (restIds.length) { content.push(H1("Другие родственники")); restIds.forEach(personBlock); }
   asksSection("Вопросы к семье — общие", restAsks);
   logSection("Журнал поиска — общие записи", restLog);
   // События
-  if (opt.events && events.length) {
+  if (opt.events && eventsPick.length) {
     content.push(H1("Исторические события"));
-    for (const e of [...events].sort((a, b) => a.year - b.year)) {
+    for (const e of [...eventsPick].sort((a, b) => a.year - b.year)) {
       const yrs = e.end && e.end !== e.year ? `${e.year}–${e.end}` : String(e.year);
       content.push({ stack: [
         { text: [{ text: yrs + "  ", bold: true }, e.title] },
@@ -3979,9 +4029,9 @@ async function buildPdf(progress, opt) {
     }
   }
   // Письма в архивы — видны только владельцу
-  if (opt.letters && requestsAll.length) {
+  if (opt.letters && lettersPick.length) {
     content.push(H1("Письма в архивы"));
-    for (const { r } of requestsAll) {
+    for (const { r } of lettersPick) {
       const st = (REQ_STATUS.find(s => s[0] === (r.status || "draft")) || REQ_STATUS[0])[1];
       const lines = [{ text: r.title || "Запрос", style: "h2" }, muted(st)];
       for (const [k, v] of [["Куда", r.address], ["Как отправить", r.how], ["Что приложить", r.attachments], ["Зачем", r.why]])
